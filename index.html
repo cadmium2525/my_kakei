@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>未来家計簿</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React, ReactDOM, Babel for JSX support -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        'use strict';
+
+        const { useState, useEffect, useMemo, useCallback, useRef } = React;
+        // Lucide-Reactのアイコンを手動で定義 (CDNの制約のため)
+        const Settings = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.22a2 2 0 0 1-1.41 1.41l-.18.07a2 2 0 0 0-1.04 1.25l-.04.2v.34a2 2 0 0 1-1.4 1.41l-.18.06a2 2 0 0 0-1.25 1.04l-.04.2v.44a2 2 0 0 0 2 2h.22a2 2 0 0 1 1.41 1.41l.07.18a2 2 0 0 0 1.25 1.04l.2.04v.34a2 2 0 0 1 1.41 1.4l.06.18a2 2 0 0 0 1.04 1.25l.2.04h.44a2 2 0 0 0 2-2v-.22a2 2 0 0 1 1.41-1.41l.18-.07a2 2 0 0 0 1.04-1.25l.04-.2v-.34a2 2 0 0 1 1.4-1.41l.18-.06a2 2 0 0 0 1.25-1.04l.04-.2v-.44a2 2 0 0 0-2-2h-.22a2 2 0 0 1-1.41-1.41l-.07-.18a2 2 0 0 0-1.25-1.04l-.2-.04V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>;
+        const DollarSign = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 21V3"/><path d="M16 16c-1.5 1.5-4 .5-4-1.5 0-2 2.5-3 4-4s4-2.5 4-4c0-2-2.5-3-4-1.5"/><path d="M8 8c1.5-1.5 4-.5 4 1.5 0 2-2.5 3-4 4s-4 2.5-4 4c0 2 2.5 3 4 1.5"/></svg>;
+        const TrendingUp = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 18 11 13 6 9 10 2 3"/><path d="M16 7h6v6"/></svg>;
+        const AlertTriangle = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12" y1="17" y2="17"/></svg>;
+        const Scale = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 16V4h2a2 2 0 0 1 2 2v14h-4"/><path d="M10 10V6h2a2 2 0 0 1 2 2v12h-4"/><path d="M4 20h16"/><path d="M14 20v-4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v4"/></svg>;
+        const Download = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>;
+        const Upload = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>;
+
+
+        // -----------------------------------------------------
+        // 1. ローカルストレージ管理フック
+        // -----------------------------------------------------
+        const useLocalStorage = (key, initialValue) => {
+            const [storedValue, setStoredValue] = useState(() => {
+                try {
+                    const item = window.localStorage.getItem(key);
+                    return item ? JSON.parse(item) : initialValue;
+                } catch (error) {
+                    console.error("Error reading localStorage key “" + key + "”:", error);
+                    return initialValue;
+                }
+            });
+
+            const setValue = (value) => {
+                try {
+                    const valueToStore = value instanceof Function ? value(storedValue) : value;
+                    setStoredValue(valueToStore);
+                    window.localStorage.setItem(key, JSON.stringify(valueToStore));
+                } catch (error) {
+                    console.error("Error writing to localStorage key “" + key + "”:", error);
+                }
+            };
+            return [storedValue, setValue];
+        };
+
+        // -----------------------------------------------------
+        // 2. データ構造とヘルパー関数
+        // -----------------------------------------------------
+
+        const STORAGE_KEY = 'future-household-ledger-data';
+        const PROJECTION_MONTHS = 120; // 10年分の予測
+
+        const initialSettings = {
+            accounts: [], 
+            family: [], 
+            recurringExpenses: [], 
+            futureEvents: [], 
+            balances: [], 
+        };
+
+        const monthYearToDate = (monthYear) => {
+            const [year, month] = monthYear.split('-').map(Number);
+            // 月を0ベースに修正するため month - 1 を使用
+            return new Date(year, month - 1, 1); 
+        };
+
+        const dateToMonthYear = (date) => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            return `${year}-${month}`;
+        };
+
+        const addMonths = (date, months) => {
+            const newDate = new Date(date);
+            newDate.setMonth(newDate.getMonth() + months);
+            return newDate;
+        };
+
+        const calculateProjection = (settings) => {
+            const { balances, recurringExpenses, futureEvents, family } = settings;
+            if (!balances || balances.length < 2) {
+                return { 
+                    projection: [], 
+                    averageMonthlyChange: 0, 
+                    warning: "予測には少なくとも2ヶ月分の残高データが必要です。" 
+                };
+            }
+
+            const sortedBalances = [...balances].sort((a, b) => a.monthYear.localeCompare(b.monthYear));
+            
+            // --- 過去の実績を「定常的な変化」に調整するロジック ---
+            const coreChanges = []; // 定期/イベント支出の影響を取り除いた純粋な月間変化
+
+            for (let i = 1; i < sortedBalances.length; i++) {
+                const currentTotal = sortedBalances[i].totalBalance;
+                const previousTotal = sortedBalances[i - 1].totalBalance;
+                let actualMonthlyChange = currentTotal - previousTotal; // 実際の残高変化
+
+                const monthYear = sortedBalances[i].monthYear;
+                const [year, month] = monthYear.split('-').map(Number);
+                
+                let historicalOutflow = 0; // この月に発生したと推定される特別支出 (残高から引かれた分)
+
+                // 過去の定期支出の確認
+                recurringExpenses.forEach(expense => {
+                    const startDate = monthYearToDate(expense.startMonthYear);
+                    const intervalMonths = expense.intervalYears * 12;
+                    
+                    // 月の差分を計算: (対象年 - 開始年) * 12 + (対象月 - 開始月)
+                    const monthDiff = (year - startDate.getFullYear()) * 12 + (month - (startDate.getMonth() + 1));
+                    
+                    // 月の差分が0以上（開始月以降）で、かつ間隔の倍数に合致
+                    if (monthDiff >= 0 && monthDiff % intervalMonths === 0) {
+                        historicalOutflow += expense.amount;
+                    }
+                });
+
+                // 過去のイベント支出の確認
+                futureEvents.forEach(event => {
+                    const familyMember = family.find(f => f.id === event.targetFamilyMemberId);
+                    if (!familyMember) return;
+                    
+                    // 現在の西暦 - 家族の現在の年齢 = 家族の誕生年 (約)
+                    const currentYear = new Date().getFullYear();
+                    const memberBirthYear = currentYear - familyMember.currentAge; 
+                    const eventYear = memberBirthYear + event.targetAge; // イベント発生年の計算
+
+                    if (year === eventYear && month === event.targetMonth) {
+                        historicalOutflow += event.amount;
+                    }
+                });
+
+                // 定常的な月間変化 = 実際の変化 + 特別支出 (残高から引かれた分を戻すことで、コア収支のみを抽出)
+                const coreMonthlyChange = actualMonthlyChange + historicalOutflow;
+                coreChanges.push(coreMonthlyChange);
+            }
+
+            const monthCount = coreChanges.length;
+            const averageCoreMonthlyChange = monthCount > 0 
+                ? coreChanges.reduce((sum, change) => sum + change, 0) / monthCount 
+                : 0;
+            // -------------------------------------------------------------------
+
+            const lastBalanceEntry = sortedBalances[sortedBalances.length - 1];
+            let currentTotalBalance = lastBalanceEntry.totalBalance;
+            let currentDate = monthYearToDate(lastBalanceEntry.monthYear);
+            
+            const projection = [];
+
+            for (let i = 1; i <= PROJECTION_MONTHS; i++) {
+                currentDate = addMonths(currentDate, 1);
+                const projectionMonthYear = dateToMonthYear(currentDate);
+                const projectionYear = currentDate.getFullYear();
+                const projectionMonth = currentDate.getMonth() + 1;
+
+                // 予測の基礎に「定常的な月間変化」を適用
+                currentTotalBalance += averageCoreMonthlyChange; 
+
+                let monthlyOutflow = 0; 
+
+                // 定期支出の適用 (将来の特別支出を別途差し引く)
+                recurringExpenses.forEach(expense => {
+                    const startDate = monthYearToDate(expense.startMonthYear);
+                    const intervalMonths = expense.intervalYears * 12;
+                    
+                    const monthDiff = (projectionYear - startDate.getFullYear()) * 12 + (projectionMonth - (startDate.getMonth() + 1));
+                    
+                    if (monthDiff >= 0 && monthDiff % intervalMonths === 0) {
+                        currentTotalBalance -= expense.amount;
+                        monthlyOutflow += expense.amount;
+                    }
+                });
+
+                // イベント支出の適用 (将来の特別支出を別途差し引く)
+                futureEvents.forEach(event => {
+                    const familyMember = family.find(f => f.id === event.targetFamilyMemberId);
+                    if (!familyMember) return;
+                    
+                    const currentYear = new Date().getFullYear();
+                    const memberBirthYear = currentYear - familyMember.currentAge; 
+                    const eventYear = memberBirthYear + event.targetAge;
+
+                    if (projectionYear === eventYear && projectionMonth === event.targetMonth) {
+                        currentTotalBalance -= event.amount;
+                        monthlyOutflow += event.amount;
+                    }
+                });
+                
+                projection.push({
+                    monthYear: projectionMonthYear,
+                    balance: Math.round(currentTotalBalance),
+                    isEventMonth: monthlyOutflow > 0,
+                    monthlyOutflow: monthlyOutflow
+                });
+            }
+
+            return { 
+                projection, 
+                // プロパティ名は維持しつつ、調整後の平均を返す
+                averageMonthlyChange: Math.round(averageCoreMonthlyChange), 
+                warning: "" 
+            };
+        };
+
+        const formatCurrency = (number) => {
+            return new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY' }).format(number);
+        };
+
+        // -----------------------------------------------------
+        // 3. メインコンポーネント
+        // -----------------------------------------------------
+
+        const App = () => {
+            const [settings, setSettings] = useLocalStorage(STORAGE_KEY, initialSettings);
+            const [tab, setTab] = useState('balance'); 
+            const [message, setMessage] = useState('');
+
+            const showMessage = (text) => {
+                setMessage(text);
+                setTimeout(() => setMessage(''), 5000); 
+            };
+
+            const { projection, averageMonthlyChange, warning } = useMemo(() => 
+                calculateProjection(settings), [settings]);
+            
+            // --- データ管理ロジック (変更なし) ---
+
+            const handleExport = useCallback(() => {
+                try {
+                    const dataStr = JSON.stringify(settings, null, 2);
+                    const blob = new Blob([dataStr], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const date = new Date().toISOString().slice(0, 10);
+                    const filename = `kakeibo_data_export_${date}.json`;
+
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    showMessage('データを正常にエクスポートしました。ファイル名: ' + filename);
+                } catch (error) {
+                    console.error("Export failed:", error);
+                    showMessage('データのエクスポート中にエラーが発生しました。');
+                }
+            }, [settings]);
+
+            const fileInputRef = useRef(null);
+            const handleImport = useCallback((event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const importedData = JSON.parse(e.target.result);
+                        
+                        if (importedData.accounts && importedData.balances) {
+                            setSettings(importedData);
+                            showMessage('データを正常にインポートし、アプリに適用しました！');
+                        } else {
+                            throw new Error("Invalid file structure.");
+                        }
+                    } catch (error) {
+                        console.error("Import failed:", error);
+                        showMessage('ファイル形式が無効か、データ構造が不正です。JSONファイルを確認してください。');
+                    }
+                };
+                reader.onerror = () => {
+                    showMessage('ファイルの読み込み中にエラーが発生しました。');
+                };
+                reader.readAsText(file);
+            }, [setSettings]);
+
+
+            // UIコンポーネントの定義 (変更なし)
+            const TabButton = ({ id, label, Icon }) => (
+                <button
+                    onClick={() => setTab(id)}
+                    className={`flex-1 p-3 flex items-center justify-center space-x-2 text-sm font-medium rounded-t-lg transition duration-200 
+                        ${tab === id 
+                            ? 'text-white bg-indigo-600 shadow-lg' 
+                            : 'text-gray-600 hover:text-indigo-600 bg-gray-100 hover:bg-gray-200'
+                        }`}
+                >
+                    <Icon size={18} />
+                    <span>{label}</span>
+                </button>
+            );
+
+            const Card = ({ title, children, className = '' }) => (
+                <div className={`bg-white p-6 rounded-xl shadow-md border border-gray-100 ${className}`}>
+                    <h2 className="text-xl font-semibold mb-4 text-gray-800 border-b pb-2">{title}</h2>
+                    {children}
+                </div>
+            );
+
+            const TextInput = ({ label, id, value, onChange, type = 'text', required = false }) => (
+                <div className="mb-4">
+                    <label htmlFor={id} className="block text-sm font-medium text-gray-700">{label}</label>
+                    <input
+                        type={type}
+                        id={id}
+                        value={value}
+                        onChange={onChange}
+                        required={required}
+                        className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                </div>
+            );
+
+            // --- Tab Content Components ---
+
+            const BalanceInputForm = () => {
+                const [balanceMonthYear, setBalanceMonthYear] = useState(dateToMonthYear(new Date()));
+                const [currentAccountBalances, setCurrentAccountBalances] = useState({});
+
+                const handleAddBalance = (e) => {
+                    e.preventDefault();
+                    if (settings.accounts.length === 0) {
+                        showMessage("先に設定タブで口座を登録してください。");
+                        return;
+                    }
+                    
+                    const monthData = settings.accounts.map(account => ({
+                        accountId: account.id,
+                        balance: Number(currentAccountBalances[account.id] || 0)
+                    }));
+                    const totalBalance = monthData.reduce((sum, item) => sum + item.balance, 0);
+
+                    const newBalanceEntry = {
+                        monthYear: balanceMonthYear,
+                        totalBalance: totalBalance,
+                        accountBalances: monthData
+                    };
+
+                    const updatedBalances = settings.balances.filter(b => b.monthYear !== balanceMonthYear);
+                    updatedBalances.push(newBalanceEntry);
+                    updatedBalances.sort((a, b) => a.monthYear.localeCompare(b.monthYear));
+
+                    setSettings({ ...settings, balances: updatedBalances });
+                    showMessage(`${balanceMonthYear}の残高を保存しました。`);
+                    
+                    const resetBalances = settings.accounts.reduce((acc, account) => {
+                        acc[account.id] = '';
+                        return acc;
+                    }, {});
+                    setCurrentAccountBalances(resetBalances);
+                    
+                    const nextMonth = addMonths(monthYearToDate(balanceMonthYear), 1);
+                    setBalanceMonthYear(dateToMonthYear(nextMonth));
+                };
+
+                const currentMonthBalance = settings.balances.find(b => b.monthYear === balanceMonthYear);
+
+                return (
+                    <div className="grid grid-cols-1 gap-6 p-4">
+                        <Card title="月末残高入力" className="lg:col-span-3">
+                            <form onSubmit={handleAddBalance}>
+                                <div className="mb-4">
+                                    <label htmlFor="balanceMonth" className="block text-lg font-bold text-gray-800">対象月</label>
+                                    <input
+                                        type="month"
+                                        id="balanceMonth"
+                                        value={balanceMonthYear}
+                                        onChange={(e) => setBalanceMonthYear(e.target.value)}
+                                        required
+                                        className="mt-1 block w-full md:w-1/3 px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 text-lg"
+                                    />
+                                </div>
+
+                                {settings.accounts.length === 0 ? (
+                                    <div className="text-red-500 bg-red-50 p-3 rounded-lg flex items-center mb-4">
+                                        <AlertTriangle size={20} className="mr-2 flex-shrink-0" />設定タブで口座を登録してから残高を入力してください。
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                        {settings.accounts.map(acc => (
+                                            <TextInput
+                                                key={acc.id}
+                                                label={`${acc.name} の月末残高 (円)`}
+                                                id={`balance-${acc.id}`}
+                                                type="number"
+                                                value={currentAccountBalances[acc.id] || ''}
+                                                onChange={(e) => setCurrentAccountBalances({
+                                                    ...currentAccountBalances,
+                                                    [acc.id]: e.target.value
+                                                })}
+                                                required
+                                            />
+                                        ))}
+                                    </div>
+                                )}
+                                
+                                <button 
+                                    type="submit" 
+                                    className="w-full mt-4 bg-green-600 text-white text-lg font-bold p-3 rounded-xl hover:bg-green-700 transition duration-150 shadow-lg disabled:bg-gray-400"
+                                    disabled={settings.accounts.length === 0 || currentMonthBalance}
+                                >
+                                    {currentMonthBalance ? `${balanceMonthYear}の残高は入力済みです` : '残高を登録して次の月へ'}
+                                </button>
+                            </form>
+                            <div className="mt-8 pt-4 border-t border-gray-100">
+                                <h3 className="font-semibold text-gray-700 mb-2">過去の残高入力履歴 ({settings.balances.length}ヶ月)</h3>
+                                <ul className="space-y-1 text-sm max-h-48 overflow-y-auto p-2 bg-gray-50 rounded-lg">
+                                    {settings.balances
+                                        .sort((a, b) => b.monthYear.localeCompare(a.monthYear))
+                                        .map(b => (
+                                        <li key={b.monthYear} className="flex justify-between items-center border-b last:border-b-0 py-1 px-2">
+                                            <span className="font-medium text-indigo-600">{b.monthYear}</span>
+                                            <span>合計残高: <span className="font-bold">{formatCurrency(b.totalBalance)}</span></span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        </Card>
+                    </div>
+                );
+            };
+
+            const SettingForm = () => {
+                const [accountName, setAccountName] = useState('');
+                const [familyName, setFamilyName] = useState('');
+                const [familyAge, setFamilyAge] = useState('');
+                const [expenseName, setExpenseName] = useState('');
+                const [expenseAmount, setExpenseAmount] = useState('');
+                const [expenseInterval, setExpenseInterval] = useState('1');
+                const [expenseStartMonth, setExpenseStartMonth] = useState(dateToMonthYear(new Date()));
+                const [eventName, setEventName] = useState('');
+                const [eventAmount, setEventAmount] = useState('');
+                const [eventTargetMember, setEventTargetMember] = useState(settings.family[0]?.id || '');
+                const [eventTargetAge, setEventTargetAge] = useState('');
+                const [eventTargetMonth, setEventTargetMonth] = useState('4');
+
+                const handleAddAccount = (e) => {
+                    e.preventDefault();
+                    if (!accountName) return;
+                    const newAccounts = [...settings.accounts, { id: crypto.randomUUID(), name: accountName.trim() }];
+                    setSettings({ ...settings, accounts: newAccounts });
+                    setAccountName('');
+                    showMessage('新しい口座を保存しました。');
+                };
+
+                const handleAddFamily = (e) => {
+                    e.preventDefault();
+                    if (!familyName || !familyAge) return;
+                    const newFamily = [...settings.family, { 
+                        id: crypto.randomUUID(), 
+                        name: familyName.trim(), 
+                        currentAge: Number(familyAge) 
+                    }];
+                    setSettings({ ...settings, family: newFamily });
+                    setFamilyName('');
+                    setFamilyAge('');
+                    showMessage('家族情報を保存しました。');
+                };
+
+                const handleAddExpense = (e) => {
+                    e.preventDefault();
+                    if (!expenseName || !expenseAmount || !expenseInterval) return;
+                    const newExpense = {
+                        id: crypto.randomUUID(),
+                        name: expenseName.trim(),
+                        amount: Number(expenseAmount),
+                        intervalYears: Number(expenseInterval),
+                        startMonthYear: expenseStartMonth
+                    };
+                    setSettings({ ...settings, recurringExpenses: [...settings.recurringExpenses, newExpense] });
+                    setExpenseName('');
+                    setExpenseAmount('');
+                    showMessage('定期支出を保存しました。');
+                };
+
+                const handleAddEvent = (e) => {
+                    e.preventDefault();
+                    if (!eventName || !eventAmount || !eventTargetMember || !eventTargetAge || !eventTargetMonth) return;
+                    const newEvent = {
+                        id: crypto.randomUUID(),
+                        name: eventName.trim(),
+                        amount: Number(eventAmount),
+                        targetFamilyMemberId: eventTargetMember,
+                        targetAge: Number(eventTargetAge),
+                        targetMonth: Number(eventTargetMonth)
+                    };
+                    setSettings({ ...settings, futureEvents: [...settings.futureEvents, newEvent] });
+                    setEventName('');
+                    setEventAmount('');
+                    setEventTargetAge('');
+                    showMessage('イベント支出を保存しました。');
+                };
+
+                return (
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-4">
+                        {/* 1. 口座設定 */}
+                        <Card title="口座設定" className="lg:col-span-1">
+                            <form onSubmit={handleAddAccount} className="mb-4 space-y-3">
+                                <TextInput
+                                    label="口座名"
+                                    id="accountName"
+                                    value={accountName}
+                                    onChange={(e) => setAccountName(e.target.value)}
+                                    required
+                                />
+                                <button type="submit" className="w-full bg-indigo-500 text-white p-2 rounded-lg hover:bg-indigo-600 transition duration-150 shadow-md">
+                                    口座を追加
+                                </button>
+                            </form>
+                            <div className="mt-4 pt-4 border-t border-gray-100">
+                                <h3 className="font-semibold text-gray-700 mb-2">登録済み口座 ({settings.accounts.length})</h3>
+                                <ul className="space-y-1">
+                                    {settings.accounts.map(acc => (
+                                        <li key={acc.id} className="text-sm p-2 bg-gray-50 rounded-lg flex justify-between items-center">
+                                            {acc.name}
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        </Card>
+
+                        {/* 2. 家族設定 */}
+                        <Card title="家族設定" className="lg:col-span-1">
+                            <form onSubmit={handleAddFamily} className="mb-4 space-y-3">
+                                <TextInput
+                                    label="氏名"
+                                    id="familyName"
+                                    value={familyName}
+                                    onChange={(e) => setFamilyName(e.target.value)}
+                                    required
+                                />
+                                <TextInput
+                                    label="現在の年齢"
+                                    id="familyAge"
+                                    type="number"
+                                    value={familyAge}
+                                    onChange={(e) => setFamilyAge(e.target.value)}
+                                    required
+                                />
+                                <button type="submit" className="w-full bg-indigo-500 text-white p-2 rounded-lg hover:bg-indigo-600 transition duration-150 shadow-md">
+                                    家族を追加
+                                </button>
+                            </form>
+                            <div className="mt-4 pt-4 border-t border-gray-100">
+                                <h3 className="font-semibold text-gray-700 mb-2">登録済み家族 ({settings.family.length})</h3>
+                                <ul className="space-y-1">
+                                    {settings.family.map(fam => (
+                                        <li key={fam.id} className="text-sm p-2 bg-gray-50 rounded-lg flex justify-between items-center">
+                                            {fam.name} ({fam.currentAge}歳)
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        </Card>
+
+                        {/* 5. データ管理 (新規追加) */}
+                        <Card title="データ管理 (バックアップ)" className="lg:col-span-1">
+                            <p className="text-sm text-gray-600 mb-4">ブラウザのキャッシュクリアに備え、データをファイルに保存/復元できます。</p>
+                            
+                            {/* エクスポートボタン */}
+                            <button 
+                                onClick={handleExport}
+                                className="w-full mb-3 flex items-center justify-center space-x-2 bg-blue-500 text-white p-2 rounded-lg hover:bg-blue-600 transition duration-150 shadow-md"
+                            >
+                                <Download size={18} />
+                                <span>データをエクスポート (保存)</span>
+                            </button>
+
+                            {/* インポートセクション */}
+                            <div className="border-t pt-4 mt-4">
+                                <label htmlFor="file-upload" className="w-full flex items-center justify-center space-x-2 bg-green-500 text-white p-2 rounded-lg hover:bg-green-600 transition duration-150 shadow-md cursor-pointer">
+                                    <Upload size={18} />
+                                    <span>データをインポート (復元)</span>
+                                </label>
+                                <input
+                                    id="file-upload"
+                                    type="file"
+                                    ref={fileInputRef}
+                                    onChange={handleImport}
+                                    accept=".json"
+                                    className="hidden"
+                                />
+                                <p className="text-xs text-gray-500 mt-2 text-center">※JSONファイルのみ対応</p>
+                            </div>
+                        </Card>
+
+                        {/* 3. 定期的な支出設定 */}
+                        <Card title="定期的な支出設定" className="lg:col-span-2">
+                            <form onSubmit={handleAddExpense} className="mb-4 space-y-3">
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                    <TextInput
+                                        label="支出名 (例: 車検代)"
+                                        id="expenseName"
+                                        value={expenseName}
+                                        onChange={(e) => setExpenseName(e.target.value)}
+                                        required
+                                    />
+                                    <TextInput
+                                        label="金額 (円)"
+                                        id="expenseAmount"
+                                        type="number"
+                                        value={expenseAmount}
+                                        onChange={(e) => setExpenseAmount(e.target.value)}
+                                        required
+                                    />
+                                     <div className="flex-1">
+                                        <label className="block text-sm font-medium text-gray-700">間隔 (年)</label>
+                                        <select 
+                                            value={expenseInterval} 
+                                            onChange={(e) => setExpenseInterval(e.target.value)}
+                                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                                        >
+                                            <option value="1">1年ごと</option>
+                                            <option value="2">2年ごと</option>
+                                            <option value="3">3年ごと</option>
+                                            <option value="5">5年ごと</option>
+                                        </select>
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="block text-sm font-medium text-gray-700">初回支払月</label>
+                                        <input
+                                            type="month"
+                                            value={expenseStartMonth}
+                                            onChange={(e) => setExpenseStartMonth(e.target.value)}
+                                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                                        />
+                                    </div>
+                                </div>
+                               
+                                <button type="submit" className="w-full bg-indigo-500 text-white p-2 rounded-lg hover:bg-indigo-600 transition duration-150 shadow-md">
+                                    支出を追加
+                                </button>
+                            </form>
+                            <div className="mt-4 pt-4 border-t border-gray-100">
+                                <h3 className="font-semibold text-gray-700 mb-2">定期支出 ({settings.recurringExpenses.length})</h3>
+                                <ul className="space-y-1 text-sm">
+                                    {settings.recurringExpenses.map(exp => (
+                                        <li key={exp.id} className="p-2 bg-gray-50 rounded-lg">
+                                            {exp.name}: {formatCurrency(exp.amount)} / {exp.intervalYears}年
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        </Card>
+
+                        {/* 4. イベント的な支出設定 */}
+                        <Card title="将来イベント支出設定" className="lg:col-span-3">
+                            <form onSubmit={handleAddEvent} className="mb-4 space-y-3">
+                                <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                                    <div className="md:col-span-1">
+                                        <TextInput
+                                            label="イベント名 (例: 入学費用)"
+                                            id="eventName"
+                                            value={eventName}
+                                            onChange={(e) => setEventName(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+                                    <div className="md:col-span-1">
+                                        <TextInput
+                                            label="金額 (円)"
+                                            id="eventAmount"
+                                            type="number"
+                                            value={eventAmount}
+                                            onChange={(e) => setEventAmount(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+                                    <div className="md:col-span-1">
+                                        <label className="block text-sm font-medium text-gray-700">対象者</label>
+                                        <select 
+                                            value={eventTargetMember} 
+                                            onChange={(e) => setEventTargetMember(e.target.value)}
+                                            required
+                                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                                        >
+                                            {settings.family.map(fam => (
+                                                <option key={fam.id} value={fam.id}>{fam.name} ({fam.currentAge}歳)</option>
+                                            ))}
+                                            {settings.family.length === 0 && <option value="" disabled>家族を先に登録</option>}
+                                        </select>
+                                    </div>
+                                    <div className="md:col-span-1">
+                                        <TextInput
+                                            label="対象年齢 (〜歳)"
+                                            id="eventTargetAge"
+                                            type="number"
+                                            value={eventTargetAge}
+                                            onChange={(e) => setEventTargetAge(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+                                    <div className="md:col-span-1">
+                                        <label className="block text-sm font-medium text-gray-700">発生月 (1-12)</label>
+                                        <select 
+                                            value={eventTargetMonth} 
+                                            onChange={(e) => setEventTargetMonth(e.target.value)}
+                                            required
+                                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                                        >
+                                            {[...Array(12).keys()].map(i => <option key={i + 1} value={i + 1}>{i + 1}月</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+                                <button type="submit" className="w-full bg-indigo-500 text-white p-2 rounded-lg hover:bg-indigo-600 transition duration-150 shadow-md">
+                                    イベント支出を追加
+                                </button>
+                            </form>
+                            <div className="mt-4 pt-4 border-t border-gray-100">
+                                <h3 className="font-semibold text-gray-700 mb-2">登録済みイベント ({settings.futureEvents.length})</h3>
+                                <ul className="space-y-1 text-sm">
+                                    {settings.futureEvents.map(event => {
+                                        const fam = settings.family.find(f => f.id === event.targetFamilyMemberId);
+                                        return (
+                                            <li key={event.id} className="p-2 bg-gray-50 rounded-lg">
+                                                {event.name} ({formatCurrency(event.amount)}): {fam?.name}が{event.targetAge}歳になる{event.targetMonth}月
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            </div>
+                        </Card>
+                    </div>
+                );
+            };
+
+            const ProjectionView = () => {
+                return (
+                    <div className="p-4 space-y-6">
+                        <Card title="将来予測サマリー">
+                            <div className="flex justify-around items-center text-center">
+                                <div className="p-4 bg-indigo-50 rounded-lg flex-1 mx-2">
+                                    <p className="text-sm text-gray-500">最新残高 (全口座合計)</p>
+                                    <p className="text-2xl font-bold text-indigo-700">
+                                        {settings.balances.length > 0 ? formatCurrency(settings.balances[settings.balances.length - 1].totalBalance) : '---'}
+                                    </p>
+                                </div>
+                                <div className="p-4 bg-green-50 rounded-lg flex-1 mx-2">
+                                    <p className="text-sm text-gray-500 font-bold">定常的な月間収支 (特別支出調整後)</p>
+                                    <p className="text-2xl font-bold text-green-700">
+                                        {formatCurrency(averageMonthlyChange)}
+                                    </p>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                        ※ この収支に定期・イベント支出を加えて将来予測します。
+                                    </p>
+                                </div>
+                            </div>
+                        </Card>
+
+                        {warning && (
+                            <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-lg flex items-start">
+                                <AlertTriangle size={20} className="mt-1 mr-3 flex-shrink-0" />
+                                <p className="text-sm">{warning}</p>
+                            </div>
+                        )}
+
+                        <Card title="10年間 (120ヶ月) の将来残高予測">
+                            <div className="max-h-[600px] overflow-y-auto">
+                                <table className="min-w-full divide-y divide-gray-200">
+                                    <thead className="bg-gray-50 sticky top-0">
+                                        <tr>
+                                            <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">対象月</th>
+                                            <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">予測残高</th>
+                                            <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">特別支出</th>
+                                            <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">備考</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="bg-white divide-y divide-gray-200">
+                                        {projection.map((item, index) => (
+                                            <tr key={index} className={item.isEventMonth ? 'bg-red-50 font-medium' : index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                                                <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900">{item.monthYear}</td>
+                                                <td className={`px-3 py-2 whitespace-nowrap text-sm text-right ${item.balance < 0 ? 'text-red-600 font-bold' : 'text-gray-900'}`}>
+                                                    {formatCurrency(item.balance)}
+                                                </td>
+                                                <td className="px-3 py-2 whitespace-nowrap text-sm text-right text-red-600">
+                                                    {item.monthlyOutflow > 0 ? formatCurrency(item.monthlyOutflow) : '-'}
+                                                </td>
+                                                <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-500">
+                                                    {item.isEventMonth && (
+                                                        <span className="bg-red-200 text-red-800 p-1 rounded-full text-xs">
+                                                            イベント/定期支出あり
+                                                        </span>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                                {projection.length === 0 && (
+                                    <p className="text-center py-8 text-gray-500">予測を生成するには、まず設定と残高を入力してください。</p>
+                                )}
+                            </div>
+                        </Card>
+                    </div>
+                );
+            };
+
+            return (
+                <div className="font-['Inter'] antialiased p-4 sm:p-8">
+                    <header className="mb-6">
+                        <h1 className="text-3xl font-extrabold text-gray-900 flex items-center">
+                            <DollarSign size={28} className="text-indigo-600 mr-2" />
+                            未来家計簿
+                        </h1>
+                        <p className="text-sm text-gray-500 mt-1">
+                            データはローカルストレージに保存されますが、設定タブでファイルにバックアップできます。
+                        </p>
+                        {message && (
+                            <div className="mt-3 p-3 text-sm rounded-lg bg-indigo-100 text-indigo-700 font-medium transition duration-300 shadow-sm">
+                                {message}
+                            </div>
+                        )}
+                    </header>
+
+                    <nav className="flex mb-6 bg-white rounded-xl shadow-lg p-1">
+                        <TabButton id="balance" label="残高入力" Icon={Scale} />
+                        <TabButton id="setting" label="設定・支出登録" Icon={Settings} />
+                        <TabButton id="projection" label="将来予測" Icon={TrendingUp} />
+                    </nav>
+
+                    <main>
+                        {tab === 'balance' && <BalanceInputForm />}
+                        {tab === 'setting' && <SettingForm />}
+                        {tab === 'projection' && <ProjectionView />}
+                    </main>
+                </div>
+            );
+        };
+
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
+</html>
