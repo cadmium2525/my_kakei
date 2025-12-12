@@ -3,21 +3,50 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>未来家計簿</title>
-    <!-- Tailwind CSS CDN -->
+    <title>未来家計簿 - ダークモード (グラフ対応)</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- React, ReactDOM, Babel for JSX support -->
+    <script>
+        // Tailwind CSSの設定を上書きしてダークモードと角丸を調整
+        tailwind.config = {
+            darkMode: 'class', // `class` based dark mode
+            theme: {
+                extend: {
+                    borderRadius: {
+                        'xl': '0.5rem', 
+                        '2xl': '0.75rem',
+                    },
+                    colors: {
+                        'bg-dark': '#1e293b', // slate-800
+                        'bg-card': '#334155', // slate-700
+                        'text-light': '#f8fafc', // slate-50
+                        'indigo-primary': '#6366f1', // indigo-500
+                        'indigo-hover': '#4f46e5', // indigo-600
+                        'green-primary': '#10b981', // emerald-500
+                        'red-alert': '#ef4444', // red-500
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+    
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
-<body class="bg-gray-50 min-h-screen">
+<body class="bg-bg-dark text-text-light min-h-screen font-sans">
     <div id="root"></div>
 
     <script type="text/babel">
         'use strict';
 
         const { useState, useEffect, useMemo, useCallback, useRef } = React;
+        
         // Lucide-Reactのアイコンを手動で定義 (CDNの制約のため)
         const Settings = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.22a2 2 0 0 1-1.41 1.41l-.18.07a2 2 0 0 0-1.04 1.25l-.04.2v.34a2 2 0 0 1-1.4 1.41l-.18.06a2 2 0 0 0-1.25 1.04l-.04.2v.44a2 2 0 0 0 2 2h.22a2 2 0 0 1 1.41 1.41l.07.18a2 2 0 0 0 1.25 1.04l.2.04v.34a2 2 0 0 1 1.41 1.4l.06.18a2 2 0 0 0 1.04 1.25l.2.04h.44a2 2 0 0 0 2-2v-.22a2 2 0 0 1 1.41-1.41l.18-.07a2 2 0 0 0 1.04-1.25l.04-.2v-.34a2 2 0 0 1 1.4-1.41l.18-.06a2 2 0 0 0 1.25-1.04l.04-.2v-.44a2 2 0 0 0-2-2h-.22a2 2 0 0 1-1.41-1.41l-.07-.18a2 2 0 0 0-1.25-1.04l-.2-.04V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>;
         const DollarSign = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 21V3"/><path d="M16 16c-1.5 1.5-4 .5-4-1.5 0-2 2.5-3 4-4s4-2.5 4-4c0-2-2.5-3-4-1.5"/><path d="M8 8c1.5-1.5 4-.5 4 1.5 0 2-2.5 3-4 4s-4 2.5-4 4c0 2 2.5 3 4 1.5"/></svg>;
@@ -26,7 +55,9 @@
         const Scale = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 16V4h2a2 2 0 0 1 2 2v14h-4"/><path d="M10 10V6h2a2 2 0 0 1 2 2v12h-4"/><path d="M4 20h16"/><path d="M14 20v-4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v4"/></svg>;
         const Download = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>;
         const Upload = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>;
-
+        const Edit = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>;
+        const Trash2 = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M15 2l-1-1h-4l-1 1"/></svg>;
+        const X = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>;
 
         // -----------------------------------------------------
         // 1. ローカルストレージ管理フック
@@ -59,7 +90,8 @@
         // -----------------------------------------------------
 
         const STORAGE_KEY = 'future-household-ledger-data';
-        const PROJECTION_MONTHS = 120; // 10年分の予測
+        // 修正: PROJECTION_MONTHSを定数ではなく、動的に扱うように変更
+        // const PROJECTION_MONTHS = 120; // 10年分の予測
 
         const initialSettings = {
             accounts: [], 
@@ -70,6 +102,7 @@
         };
 
         const monthYearToDate = (monthYear) => {
+            if (!monthYear) return new Date();
             const [year, month] = monthYear.split('-').map(Number);
             // 月を0ベースに修正するため month - 1 を使用
             return new Date(year, month - 1, 1); 
@@ -87,9 +120,18 @@
             return newDate;
         };
 
-        const calculateProjection = (settings) => {
+        /**
+         * 将来予測を計算する関数 (予測月数を引数に追加)
+         * @param {object} settings - 家計簿設定データ
+         * @param {number} projectionMonths - 予測する月数 (例: 120, 240, 360)
+         */
+        const calculateProjection = (settings, projectionMonths) => { // 修正: projectionMonthsを引数に追加
             const { balances, recurringExpenses, futureEvents, family } = settings;
-            if (!balances || balances.length < 2) {
+            
+            // NOTE: balancesは常にmonthYearでソートされていると仮定し、最新の残高を確実に取得
+            const sortedBalances = [...balances].sort((a, b) => a.monthYear.localeCompare(b.monthYear));
+            
+            if (!sortedBalances || sortedBalances.length < 2) {
                 return { 
                     projection: [], 
                     averageMonthlyChange: 0, 
@@ -97,10 +139,9 @@
                 };
             }
 
-            const sortedBalances = [...balances].sort((a, b) => a.monthYear.localeCompare(b.monthYear));
             
-            // --- 過去の実績を「定常的な変化」に調整するロジック ---
-            const coreChanges = []; // 定期/イベント支出の影響を取り除いた純粋な月間変化
+            // --- 過去の実績から「定常的な変化」を算出するロジック ---
+            const coreChanges = []; 
 
             for (let i = 1; i < sortedBalances.length; i++) {
                 const currentTotal = sortedBalances[i].totalBalance;
@@ -117,11 +158,9 @@
                     const startDate = monthYearToDate(expense.startMonthYear);
                     const intervalMonths = expense.intervalYears * 12;
                     
-                    // 月の差分を計算: (対象年 - 開始年) * 12 + (対象月 - 開始月)
                     const monthDiff = (year - startDate.getFullYear()) * 12 + (month - (startDate.getMonth() + 1));
                     
-                    // 月の差分が0以上（開始月以降）で、かつ間隔の倍数に合致
-                    if (monthDiff >= 0 && monthDiff % intervalMonths === 0) {
+                    if (monthDiff >= 0 && intervalMonths > 0 && monthDiff % intervalMonths === 0) {
                         historicalOutflow += expense.amount;
                     }
                 });
@@ -129,19 +168,19 @@
                 // 過去のイベント支出の確認
                 futureEvents.forEach(event => {
                     const familyMember = family.find(f => f.id === event.targetFamilyMemberId);
-                    if (!familyMember) return;
+                    if (!familyMember || !familyMember.currentAge) return; 
                     
-                    // 現在の西暦 - 家族の現在の年齢 = 家族の誕生年 (約)
+                    // 現在の年とイベント発生月を基準にイベント発生年を推定
                     const currentYear = new Date().getFullYear();
                     const memberBirthYear = currentYear - familyMember.currentAge; 
-                    const eventYear = memberBirthYear + event.targetAge; // イベント発生年の計算
+                    const eventYear = memberBirthYear + event.targetAge; 
 
                     if (year === eventYear && month === event.targetMonth) {
                         historicalOutflow += event.amount;
                     }
                 });
 
-                // 定常的な月間変化 = 実際の変化 + 特別支出 (残高から引かれた分を戻すことで、コア収支のみを抽出)
+                // 定常的な月間変化 = 実際の変化 + 特別支出 (過去の特別支出を「戻す」ことでコア収支を抽出)
                 const coreMonthlyChange = actualMonthlyChange + historicalOutflow;
                 coreChanges.push(coreMonthlyChange);
             }
@@ -158,7 +197,7 @@
             
             const projection = [];
 
-            for (let i = 1; i <= PROJECTION_MONTHS; i++) {
+            for (let i = 1; i <= projectionMonths; i++) { // 修正: PROJECTION_MONTHSをprojectionMonthsに変更
                 currentDate = addMonths(currentDate, 1);
                 const projectionMonthYear = dateToMonthYear(currentDate);
                 const projectionYear = currentDate.getFullYear();
@@ -176,7 +215,7 @@
                     
                     const monthDiff = (projectionYear - startDate.getFullYear()) * 12 + (projectionMonth - (startDate.getMonth() + 1));
                     
-                    if (monthDiff >= 0 && monthDiff % intervalMonths === 0) {
+                    if (monthDiff >= 0 && intervalMonths > 0 && monthDiff % intervalMonths === 0) {
                         currentTotalBalance -= expense.amount;
                         monthlyOutflow += expense.amount;
                     }
@@ -185,7 +224,7 @@
                 // イベント支出の適用 (将来の特別支出を別途差し引く)
                 futureEvents.forEach(event => {
                     const familyMember = family.find(f => f.id === event.targetFamilyMemberId);
-                    if (!familyMember) return;
+                    if (!familyMember || !familyMember.currentAge) return;
                     
                     const currentYear = new Date().getFullYear();
                     const memberBirthYear = currentYear - familyMember.currentAge; 
@@ -207,7 +246,6 @@
 
             return { 
                 projection, 
-                // プロパティ名は維持しつつ、調整後の平均を返す
                 averageMonthlyChange: Math.round(averageCoreMonthlyChange), 
                 warning: "" 
             };
@@ -218,23 +256,456 @@
         };
 
         // -----------------------------------------------------
-        // 3. メインコンポーネント
+        // 3. UI/ヘルパーコンポーネント
+        // -----------------------------------------------------
+
+        // カスタム確認モーダル (window.confirmの代替)
+        const ConfirmActionModal = ({ action, onConfirm, onCancel }) => {
+            if (!action) return null;
+
+            const { itemType, id } = action;
+            const message = `本当にこの${itemType === 'balance' ? '残高データ' : '項目'}を削除しますか？\n（削除した場合、未来予測にも影響が出ます）`;
+            const title = itemType === 'balance' ? '残高削除の確認' : '項目削除の確認';
+
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4 transition-opacity duration-300">
+                    <div className="bg-bg-card p-6 rounded-2xl w-full max-w-sm shadow-2xl border border-slate-600">
+                        <div className="flex justify-between items-start mb-4 border-b border-slate-600 pb-2">
+                            <h3 className="text-xl font-bold">{title}</h3>
+                            <button onClick={onCancel} className="text-slate-400 hover:text-text-light">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <p className="text-sm text-slate-300 whitespace-pre-wrap">{message}</p>
+                        <div className="flex justify-end space-x-4 mt-6">
+                            <button 
+                                type="button" 
+                                onClick={onCancel} 
+                                className="bg-slate-600 text-white px-4 py-2 rounded-lg hover:bg-slate-700 transition duration-150"
+                            >
+                                キャンセル
+                            </button>
+                            <button 
+                                type="button" 
+                                onClick={() => onConfirm(itemType, id)} 
+                                className="bg-red-alert text-white px-4 py-2 rounded-lg hover:bg-red-600 transition duration-150"
+                            >
+                                削除を実行
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const Card = ({ title, children, className = '' }) => (
+            <div className={`bg-bg-card p-6 rounded-xl shadow-2xl border border-slate-600 ${className}`}>
+                <h2 className="text-xl font-semibold mb-4 text-text-light border-b border-slate-600 pb-2">{title}</h2>
+                {children}
+            </div>
+        );
+
+        const TextInput = ({ label, id, value, onChange, type = 'text', required = false, disabled = false, step = null }) => (
+            <div className="mb-4">
+                <label htmlFor={id} className="block text-sm font-medium text-text-light">{label}</label>
+                <input
+                    type={type}
+                    id={id}
+                    value={value}
+                    onChange={onChange}
+                    required={required}
+                    disabled={disabled}
+                    step={step}
+                    className={`mt-1 block w-full px-3 py-2 border border-slate-600 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-primary focus:border-indigo-primary bg-slate-700 text-text-light ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                />
+            </div>
+        );
+
+        // 登録情報が編集・削除できない: 編集モーダル/フォームのコンポーネント
+        const EditModal = ({ item, type, settings, onSave, onCancel }) => {
+            if (!item) return null;
+
+            const [editedItem, setEditedItem] = useState(item);
+
+            const handleChange = (field, value) => {
+                // 数値に変換が必要なフィールドを処理
+                const isNumeric = (type === 'family' && field === 'currentAge') || 
+                                  (type === 'event' && ['targetAge', 'targetMonth', 'amount'].includes(field)) || 
+                                  (type === 'expense' && ['amount', 'intervalYears'].includes(field));
+
+                setEditedItem(prev => ({ 
+                    ...prev, 
+                    [field]: isNumeric ? Number(value) : value 
+                }));
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onSave(type, editedItem);
+            };
+            
+            // 編集フォームのレンダリングロジック
+            const renderForm = () => {
+                switch (type) {
+                    case 'account':
+                        return (
+                            <TextInput label="口座名" value={editedItem.name} onChange={(e) => handleChange('name', e.target.value)} required />
+                        );
+                    case 'family':
+                        return (
+                            <>
+                                <TextInput label="氏名" value={editedItem.name} onChange={(e) => handleChange('name', e.target.value)} required />
+                                <TextInput label="現在の年齢" type="number" step="1" value={editedItem.currentAge} onChange={(e) => handleChange('currentAge', e.target.value)} required />
+                            </>
+                        );
+                    case 'expense':
+                        return (
+                            <>
+                                <TextInput label="支出名" value={editedItem.name} onChange={(e) => handleChange('name', e.target.value)} required />
+                                <TextInput label="金額 (円)" type="number" step="1" value={editedItem.amount} onChange={(e) => handleChange('amount', e.target.value)} required />
+                                <label className="block text-sm font-medium text-text-light">間隔 (年)</label>
+                                <select 
+                                    value={editedItem.intervalYears} 
+                                    onChange={(e) => handleChange('intervalYears', e.target.value)}
+                                    className="mt-1 block w-full px-3 py-2 border border-slate-600 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-primary focus:border-indigo-primary bg-slate-700 text-text-light"
+                                >
+                                    <option value="1">1年ごと</option>
+                                    <option value="2">2年ごと</option>
+                                    <option value="3">3年ごと</option>
+                                    <option value="5">5年ごと</option>
+                                </select>
+                                <TextInput label="初回支払月" type="month" value={editedItem.startMonthYear} onChange={(e) => handleChange('startMonthYear', e.target.value)} required />
+                            </>
+                        );
+                    case 'event':
+                        return (
+                            <>
+                                <TextInput label="イベント名" value={editedItem.name} onChange={(e) => handleChange('name', e.target.value)} required />
+                                <TextInput label="金額 (円)" type="number" step="1" value={editedItem.amount} onChange={(e) => handleChange('amount', e.target.value)} required />
+                                <label className="block text-sm font-medium text-text-light">対象者</label>
+                                <select 
+                                    value={editedItem.targetFamilyMemberId} 
+                                    onChange={(e) => handleChange('targetFamilyMemberId', e.target.value)}
+                                    required
+                                    className="mt-1 block w-full px-3 py-2 border border-slate-600 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-primary focus:border-indigo-primary bg-slate-700 text-text-light"
+                                >
+                                    {settings.family.map(fam => (
+                                        <option key={fam.id} value={fam.id}>{fam.name} ({fam.currentAge}歳)</option>
+                                    ))}
+                                </select>
+                                <TextInput label="対象年齢" type="number" step="1" value={editedItem.targetAge} onChange={(e) => handleChange('targetAge', e.target.value)} required />
+                                <label className="block text-sm font-medium text-text-light">発生月 (1-12)</label>
+                                <select 
+                                    value={editedItem.targetMonth} 
+                                    onChange={(e) => handleChange('targetMonth', e.target.value)}
+                                    required
+                                    className="mt-1 block w-full px-3 py-2 border border-slate-600 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-primary focus:border-indigo-primary bg-slate-700 text-text-light"
+                                >
+                                    {[...Array(12).keys()].map(i => <option key={i + 1} value={i + 1}>{i + 1}月</option>)}
+                                </select>
+                            </>
+                        );
+                    default:
+                        return <p>編集可能な項目ではありません。</p>;
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4 transition-opacity duration-300">
+                    <form onSubmit={handleSubmit} className="bg-bg-card p-6 rounded-2xl w-full max-w-lg shadow-2xl border border-slate-600">
+                        <div className="flex justify-between items-center mb-4 border-b border-slate-600 pb-2">
+                             <h3 className="text-2xl font-bold">項目編集: {
+                                type === 'account' ? '口座' : 
+                                type === 'family' ? '家族' : 
+                                type === 'expense' ? '定期支出' : 
+                                type === 'event' ? '将来イベント' : '不明'
+                            }</h3>
+                            <button onClick={onCancel} type="button" className="text-slate-400 hover:text-text-light">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        {renderForm()}
+                        <div className="flex justify-end space-x-4 mt-6">
+                            <button type="button" onClick={onCancel} className="bg-slate-600 text-white p-2 rounded-lg hover:bg-slate-700 transition duration-150">
+                                キャンセル
+                            </button>
+                            <button type="submit" className="bg-indigo-primary text-white p-2 rounded-lg hover:bg-indigo-hover transition duration-150">
+                                保存
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            );
+        };
+        
+        // --- グラフコンポーネント (Chart.js) ---
+        // 修正: projectionYearsを引数に追加
+        const BalanceChart = ({ settings, projection, formatCurrency, projectionYears }) => { 
+            const chartRef = useRef(null);
+            const chartInstanceRef = useRef(null); // Chartインスタンスを保持
+
+            useEffect(() => {
+                // 残高が2つ未満またはcanvas参照がない場合は処理をスキップ
+                if (!chartRef.current || settings.balances.length < 2) return;
+
+                // 1. 過去の実績データを準備 (最新の12ヶ月分)
+                const sortedBalances = [...settings.balances].sort((a, b) => a.monthYear.localeCompare(b.monthYear));
+                const historicalData = sortedBalances.slice(-12); 
+
+                // 2. グラフ全体のデータを結合 (実績 + 予測)
+                const allData = [
+                    ...historicalData.map(b => ({
+                        monthYear: b.monthYear,
+                        balance: b.totalBalance,
+                        isHistorical: true
+                    })),
+                    ...projection.map(p => ({
+                        monthYear: p.monthYear,
+                        balance: p.balance,
+                        isHistorical: false
+                    }))
+                ];
+                
+                // 重複除去 (実績の最新月と予測の開始月が同じになるため)
+                const uniqueData = allData.reduce((acc, current) => {
+                    if (!acc.some(item => item.monthYear === current.monthYear)) {
+                        acc.push(current);
+                    }
+                    return acc;
+                }, []);
+
+
+                const labels = uniqueData.map(d => d.monthYear);
+                const balances = uniqueData.map(d => d.balance);
+                
+                // 実績と予測の境界線のインデックスを特定 (実績データの数)
+                const historicalCount = historicalData.length;
+                
+                // ポイントの色を、実績(緑)、予測(青)、破産予測月(赤)で分ける
+                const pointBackgroundColors = uniqueData.map((d, index) => 
+                    index < historicalCount - 1 // 実績
+                    ? 'rgba(74, 222, 128, 1)' 
+                    : d.balance < 0 // 予測で残高がマイナス
+                    ? 'rgba(239, 68, 68, 1)' 
+                    : 'rgba(99, 102, 241, 1)' // 予測で残高がプラス
+                );
+                
+                // 既存のChartインスタンスがあれば破棄
+                if (chartInstanceRef.current) {
+                    chartInstanceRef.current.destroy();
+                }
+
+                const ctx = chartRef.current.getContext('2d');
+                chartInstanceRef.current = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: '残高推移',
+                            data: balances,
+                            // 全体のラインの色は青で統一
+                            borderColor: 'rgba(99, 102, 241, 1)', 
+                            backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                            borderWidth: 2,
+                            pointRadius: 4,
+                            pointBackgroundColor: pointBackgroundColors,
+                            tension: 0.2, // 緩やかな曲線
+                            // 実績部分と予測部分でラインの色を分ける
+                            segment: {
+                                borderColor: (context) => {
+                                    // 実績の最新月（historicalCount - 1）のセグメントのスタイルを変更
+                                    const index = context.p0DataIndex;
+                                    if (index < historicalCount - 1) return 'rgba(74, 222, 128, 1)'; // エメラルド (実績)
+                                    return 'rgba(99, 102, 241, 1)'; // インディゴ (予測)
+                                },
+                                backgroundColor: (context) => {
+                                     const index = context.p0DataIndex;
+                                    if (index < historicalCount - 1) return 'rgba(74, 222, 128, 0.1)'; // エメラルド (実績)
+                                    return 'rgba(99, 102, 241, 0.1)'; // インディゴ (予測)
+                                },
+                            },
+                            spanGaps: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                labels: {
+                                    color: '#f8fafc', // text-light
+                                    font: { family: 'Inter' }
+                                }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        let label = context.dataset.label || '';
+                                        if (label) {
+                                            label += ': ';
+                                        }
+                                        if (context.parsed.y !== null) {
+                                            label += formatCurrency(context.parsed.y);
+                                        }
+                                        return label;
+                                    },
+                                    title: function(context) {
+                                        const index = context[0].dataIndex;
+                                        const isHistorical = uniqueData[index].isHistorical;
+                                        return `${context[0].label} (${isHistorical ? '実績' : '予測'})`;
+                                    }
+                                },
+                                titleColor: '#f8fafc',
+                                bodyColor: '#f8fafc',
+                                backgroundColor: 'rgba(51, 65, 85, 0.9)', // bg-card
+                                borderColor: '#475569', // slate-600
+                                borderWidth: 1,
+                                boxPadding: 4,
+                                displayColors: true,
+                                usePointStyle: true,
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: '#334155' }, // slate-700
+                                ticks: { color: '#cbd5e1' }, // slate-300
+                                title: { display: true, text: '年月', color: '#f8fafc' }
+                            },
+                            y: {
+                                grid: { color: '#334155' },
+                                ticks: { 
+                                    color: '#cbd5e1',
+                                    callback: function(value) {
+                                        // グラフの目盛を円表記
+                                        return formatCurrency(value);
+                                    } 
+                                },
+                                title: { display: true, text: '残高 (円)', color: '#f8fafc' }
+                            }
+                        }
+                    }
+                });
+                
+                // クリーンアップ関数
+                return () => {
+                    if (chartInstanceRef.current) {
+                        chartInstanceRef.current.destroy();
+                    }
+                };
+            }, [settings.balances, projection, formatCurrency, projectionYears]); // 修正: projectionYearsを依存配列に追加
+
+            if (settings.balances.length < 2) {
+                return (
+                    <Card title="残高予測グラフ">
+                        <div className="flex items-center justify-center h-[200px] text-slate-400">
+                            残高データが不足しているため、グラフを表示できません。（最低2ヶ月分の入力が必要です）
+                        </div>
+                    </Card>
+                );
+            }
+
+            // 修正: タイトルに予測年数を反映
+            return (
+                <Card title={`残高予測グラフ (過去1年実績 + ${projectionYears}年予測)`}>
+                    {/* h-[400px] で高さを固定し、responsive: true で幅に合わせて描画 */}
+                    <div className="relative w-full h-[400px]">
+                        <canvas ref={chartRef} role="img" aria-label="将来の残高予測グラフ"></canvas>
+                    </div>
+                </Card>
+            );
+        };
+        // --- グラフコンポーネント終了 ---
+
+        // -----------------------------------------------------
+        // 4. メインコンポーネント
         // -----------------------------------------------------
 
         const App = () => {
             const [settings, setSettings] = useLocalStorage(STORAGE_KEY, initialSettings);
             const [tab, setTab] = useState('balance'); 
             const [message, setMessage] = useState('');
+            const [editingItem, setEditingItem] = useState(null); 
+            const [editingType, setEditingType] = useState(null); 
+            const [confirmAction, setConfirmAction] = useState(null);
+            // 変更点1: 予測期間モードのステートを追加 (初期値: 10年)
+            const [projectionYears, setProjectionYears] = useLocalStorage('projection-years', 10); 
+
+            const projectionMonths = projectionYears * 12;
 
             const showMessage = (text) => {
                 setMessage(text);
                 setTimeout(() => setMessage(''), 5000); 
             };
 
+            // 修正: useMemoでprojectionMonthsを渡して計算
             const { projection, averageMonthlyChange, warning } = useMemo(() => 
-                calculateProjection(settings), [settings]);
+                calculateProjection(settings, projectionMonths), [settings, projectionMonths]);
             
-            // --- データ管理ロジック (変更なし) ---
+            // 最新の残高データを取得 (月でソートされた最新のデータ)
+            const latestBalanceInfo = useMemo(() => {
+                if (settings.balances.length === 0) {
+                    return { totalBalance: 0, monthYear: 'N/A' };
+                }
+                const sorted = [...settings.balances].sort((a, b) => a.monthYear.localeCompare(b.monthYear));
+                return { 
+                    totalBalance: sorted[sorted.length - 1].totalBalance,
+                    monthYear: sorted[sorted.length - 1].monthYear
+                };
+            }, [settings.balances]);
+
+
+            // --- 削除実行ロジック ---
+            const executeDelete = useCallback((type, id) => {
+                setSettings(prevSettings => {
+                    const listKey = type === 'account' ? 'accounts' 
+                                : type === 'family' ? 'family'
+                                : type === 'expense' ? 'recurringExpenses'
+                                : type === 'event' ? 'futureEvents'
+                                : type === 'balance' ? 'balances'
+                                : null;
+
+                    if (!listKey) return prevSettings;
+
+                    // balancesの削除はmonthYearで比較
+                    if (listKey === 'balances') {
+                        const newBalances = prevSettings.balances.filter(item => item.monthYear !== id);
+                        return { ...prevSettings, [listKey]: newBalances };
+                    }
+                    
+                    const newList = prevSettings[listKey].filter(item => item.id !== id);
+                    return { ...prevSettings, [listKey]: newList };
+                });
+                
+                showMessage(`項目を削除しました。(${type})`);
+                setConfirmAction(null); // 確認モーダルを閉じる
+            }, [setSettings]);
+
+            // --- 削除確認開始ハンドラ (window.confirmの代わりにConfirmActionModalを開く) ---
+            const handleDelete = useCallback((type, id) => {
+                setConfirmAction({ id, itemType: type });
+            }, []);
+
+
+            const handleSaveEdit = useCallback((type, updatedItem) => {
+                setSettings(prevSettings => {
+                    const listKey = type === 'account' ? 'accounts' 
+                                : type === 'family' ? 'family'
+                                : type === 'expense' ? 'recurringExpenses'
+                                : type === 'event' ? 'futureEvents'
+                                : null;
+                    if (!listKey) return prevSettings;
+
+                    const newList = prevSettings[listKey].map(item => 
+                        item.id === updatedItem.id ? updatedItem : item
+                    );
+                    showMessage(`項目を更新しました。(${type})`);
+                    return { ...prevSettings, [listKey]: newList };
+                });
+                setEditingItem(null);
+                setEditingType(null);
+            }, [setSettings]);
+
+            // --- データ管理ロジック ---
 
             const handleExport = useCallback(() => {
                 try {
@@ -277,6 +748,9 @@
                     } catch (error) {
                         console.error("Import failed:", error);
                         showMessage('ファイル形式が無効か、データ構造が不正です。JSONファイルを確認してください。');
+                    } finally {
+                         // ファイル選択をリセット
+                         if(fileInputRef.current) fileInputRef.current.value = '';
                     }
                 };
                 reader.onerror = () => {
@@ -286,43 +760,30 @@
             }, [setSettings]);
 
 
-            // UIコンポーネントの定義 (変更なし)
+            // UIコンポーネントの定義 (デザイン変更を適用)
             const TabButton = ({ id, label, Icon }) => (
                 <button
-                    onClick={() => setTab(id)}
-                    className={`flex-1 p-3 flex items-center justify-center space-x-2 text-sm font-medium rounded-t-lg transition duration-200 
+                    onClick={() => {
+                        setTab(id);
+                        setEditingItem(null); // タブ切り替えで編集中止
+                        setEditingType(null);
+                        setConfirmAction(null); // 確認モーダルを閉じる
+                    }}
+                    className={`flex-1 p-3 flex items-center justify-center space-x-2 text-sm font-medium rounded-lg transition duration-200 
                         ${tab === id 
-                            ? 'text-white bg-indigo-600 shadow-lg' 
-                            : 'text-gray-600 hover:text-indigo-600 bg-gray-100 hover:bg-gray-200'
+                            ? 'text-white bg-indigo-primary shadow-lg' 
+                            : 'text-text-light hover:text-indigo-primary bg-bg-card hover:bg-slate-600'
                         }`}
                 >
                     <Icon size={18} />
                     <span>{label}</span>
                 </button>
             );
-
-            const Card = ({ title, children, className = '' }) => (
-                <div className={`bg-white p-6 rounded-xl shadow-md border border-gray-100 ${className}`}>
-                    <h2 className="text-xl font-semibold mb-4 text-gray-800 border-b pb-2">{title}</h2>
-                    {children}
-                </div>
-            );
-
-            const TextInput = ({ label, id, value, onChange, type = 'text', required = false }) => (
-                <div className="mb-4">
-                    <label htmlFor={id} className="block text-sm font-medium text-gray-700">{label}</label>
-                    <input
-                        type={type}
-                        id={id}
-                        value={value}
-                        onChange={onChange}
-                        required={required}
-                        className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                    />
-                </div>
-            );
-
-            // --- Tab Content Components ---
+            
+            // 変更点2: 予測期間切替のハンドラ
+            const handleProjectionYearsChange = (years) => {
+                setProjectionYears(years);
+            };
 
             const BalanceInputForm = () => {
                 const [balanceMonthYear, setBalanceMonthYear] = useState(dateToMonthYear(new Date()));
@@ -349,6 +810,7 @@
 
                     const updatedBalances = settings.balances.filter(b => b.monthYear !== balanceMonthYear);
                     updatedBalances.push(newBalanceEntry);
+                    // 残高が常に月順にソートされることを保証
                     updatedBalances.sort((a, b) => a.monthYear.localeCompare(b.monthYear));
 
                     setSettings({ ...settings, balances: updatedBalances });
@@ -361,7 +823,7 @@
                     setCurrentAccountBalances(resetBalances);
                     
                     const nextMonth = addMonths(monthYearToDate(balanceMonthYear), 1);
-                    setBalanceMonthYear(dateToMonthYear(nextMonth));
+                    setBalanceMonthYear(dateToMonthYear(nextMonth)); 
                 };
 
                 const currentMonthBalance = settings.balances.find(b => b.monthYear === balanceMonthYear);
@@ -371,19 +833,19 @@
                         <Card title="月末残高入力" className="lg:col-span-3">
                             <form onSubmit={handleAddBalance}>
                                 <div className="mb-4">
-                                    <label htmlFor="balanceMonth" className="block text-lg font-bold text-gray-800">対象月</label>
+                                    <label htmlFor="balanceMonth" className="block text-lg font-bold text-text-light">対象月</label>
                                     <input
                                         type="month"
                                         id="balanceMonth"
                                         value={balanceMonthYear}
                                         onChange={(e) => setBalanceMonthYear(e.target.value)}
                                         required
-                                        className="mt-1 block w-full md:w-1/3 px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 text-lg"
+                                        className="mt-1 block w-full md:w-1/3 px-3 py-2 border border-slate-600 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-primary focus:border-indigo-primary text-lg bg-slate-700 text-text-light"
                                     />
                                 </div>
 
                                 {settings.accounts.length === 0 ? (
-                                    <div className="text-red-500 bg-red-50 p-3 rounded-lg flex items-center mb-4">
+                                    <div className="text-red-alert bg-red-900 bg-opacity-20 p-3 rounded-lg flex items-center mb-4">
                                         <AlertTriangle size={20} className="mr-2 flex-shrink-0" />設定タブで口座を登録してから残高を入力してください。
                                     </div>
                                 ) : (
@@ -394,6 +856,7 @@
                                                 label={`${acc.name} の月末残高 (円)`}
                                                 id={`balance-${acc.id}`}
                                                 type="number"
+                                                step="1"
                                                 value={currentAccountBalances[acc.id] || ''}
                                                 onChange={(e) => setCurrentAccountBalances({
                                                     ...currentAccountBalances,
@@ -407,21 +870,30 @@
                                 
                                 <button 
                                     type="submit" 
-                                    className="w-full mt-4 bg-green-600 text-white text-lg font-bold p-3 rounded-xl hover:bg-green-700 transition duration-150 shadow-lg disabled:bg-gray-400"
+                                    className="w-full mt-4 bg-green-primary text-white text-lg font-bold p-3 rounded-xl hover:bg-emerald-600 transition duration-150 shadow-lg disabled:bg-slate-500"
                                     disabled={settings.accounts.length === 0 || currentMonthBalance}
                                 >
                                     {currentMonthBalance ? `${balanceMonthYear}の残高は入力済みです` : '残高を登録して次の月へ'}
                                 </button>
                             </form>
-                            <div className="mt-8 pt-4 border-t border-gray-100">
-                                <h3 className="font-semibold text-gray-700 mb-2">過去の残高入力履歴 ({settings.balances.length}ヶ月)</h3>
-                                <ul className="space-y-1 text-sm max-h-48 overflow-y-auto p-2 bg-gray-50 rounded-lg">
+                            <div className="mt-8 pt-4 border-t border-slate-600">
+                                <h3 className="font-semibold text-text-light mb-2">過去の残高入力履歴 ({settings.balances.length}ヶ月)</h3>
+                                <ul className="space-y-1 text-sm max-h-48 overflow-y-auto p-2 bg-slate-700 rounded-lg">
                                     {settings.balances
                                         .sort((a, b) => b.monthYear.localeCompare(a.monthYear))
                                         .map(b => (
-                                        <li key={b.monthYear} className="flex justify-between items-center border-b last:border-b-0 py-1 px-2">
-                                            <span className="font-medium text-indigo-600">{b.monthYear}</span>
-                                            <span>合計残高: <span className="font-bold">{formatCurrency(b.totalBalance)}</span></span>
+                                        <li key={b.monthYear} className="flex justify-between items-center border-b border-slate-600 last:border-b-0 py-1 px-2">
+                                            <span className="font-medium text-indigo-primary">{b.monthYear}</span>
+                                            <div className="flex items-center space-x-4">
+                                                <span>合計残高: <span className="font-bold">{formatCurrency(b.totalBalance)}</span></span>
+                                                <button 
+                                                    onClick={() => handleDelete('balance', b.monthYear)}
+                                                    className="text-red-alert hover:text-red-400 transition duration-150 p-1 rounded-md"
+                                                    title="残高を削除"
+                                                >
+                                                    <Trash2 size={16} />
+                                                </button>
+                                            </div>
                                         </li>
                                     ))}
                                 </ul>
@@ -444,6 +916,15 @@
                 const [eventTargetMember, setEventTargetMember] = useState(settings.family[0]?.id || '');
                 const [eventTargetAge, setEventTargetAge] = useState('');
                 const [eventTargetMonth, setEventTargetMonth] = useState('4');
+
+                useEffect(() => {
+                    // 家族が登録されたら、イベント対象者の初期値を更新
+                    if (settings.family.length > 0 && (!eventTargetMember || !settings.family.find(f => f.id === eventTargetMember))) {
+                        setEventTargetMember(settings.family[0].id);
+                    } else if (settings.family.length === 0) {
+                        setEventTargetMember('');
+                    }
+                }, [settings.family, eventTargetMember]);
 
                 const handleAddAccount = (e) => {
                     e.preventDefault();
@@ -502,8 +983,25 @@
                     showMessage('イベント支出を保存しました。');
                 };
 
+                // 1. 登録情報が編集・削除できない: 編集開始ハンドラ
+                const handleEditStart = (item, type) => {
+                    setEditingItem(item);
+                    setEditingType(type);
+                };
+
                 return (
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-4">
+                        {/* 編集モーダル */}
+                        {editingItem && (
+                            <EditModal 
+                                item={editingItem} 
+                                type={editingType}
+                                settings={settings}
+                                onSave={handleSaveEdit}
+                                onCancel={() => {setEditingItem(null); setEditingType(null);}}
+                            />
+                        )}
+
                         {/* 1. 口座設定 */}
                         <Card title="口座設定" className="lg:col-span-1">
                             <form onSubmit={handleAddAccount} className="mb-4 space-y-3">
@@ -514,16 +1012,32 @@
                                     onChange={(e) => setAccountName(e.target.value)}
                                     required
                                 />
-                                <button type="submit" className="w-full bg-indigo-500 text-white p-2 rounded-lg hover:bg-indigo-600 transition duration-150 shadow-md">
+                                <button type="submit" className="w-full bg-indigo-primary text-white p-2 rounded-lg hover:bg-indigo-hover transition duration-150 shadow-md">
                                     口座を追加
                                 </button>
                             </form>
-                            <div className="mt-4 pt-4 border-t border-gray-100">
-                                <h3 className="font-semibold text-gray-700 mb-2">登録済み口座 ({settings.accounts.length})</h3>
+                            <div className="mt-4 pt-4 border-t border-slate-600">
+                                <h3 className="font-semibold text-text-light mb-2">登録済み口座 ({settings.accounts.length})</h3>
                                 <ul className="space-y-1">
                                     {settings.accounts.map(acc => (
-                                        <li key={acc.id} className="text-sm p-2 bg-gray-50 rounded-lg flex justify-between items-center">
+                                        <li key={acc.id} className="text-sm p-2 bg-slate-700 rounded-lg flex justify-between items-center">
                                             {acc.name}
+                                            <div className="flex space-x-2">
+                                                <button 
+                                                    onClick={() => handleEditStart(acc, 'account')}
+                                                    className="text-indigo-primary hover:text-indigo-400 transition duration-150 p-1 rounded-md"
+                                                    title="編集"
+                                                >
+                                                    <Edit size={16} />
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleDelete('account', acc.id)}
+                                                    className="text-red-alert hover:text-red-400 transition duration-150 p-1 rounded-md"
+                                                    title="削除"
+                                                >
+                                                    <Trash2 size={16} />
+                                                </button>
+                                            </div>
                                         </li>
                                     ))}
                                 </ul>
@@ -544,20 +1058,37 @@
                                     label="現在の年齢"
                                     id="familyAge"
                                     type="number"
+                                    step="1"
                                     value={familyAge}
                                     onChange={(e) => setFamilyAge(e.target.value)}
                                     required
                                 />
-                                <button type="submit" className="w-full bg-indigo-500 text-white p-2 rounded-lg hover:bg-indigo-600 transition duration-150 shadow-md">
+                                <button type="submit" className="w-full bg-indigo-primary text-white p-2 rounded-lg hover:bg-indigo-hover transition duration-150 shadow-md">
                                     家族を追加
                                 </button>
                             </form>
-                            <div className="mt-4 pt-4 border-t border-gray-100">
-                                <h3 className="font-semibold text-gray-700 mb-2">登録済み家族 ({settings.family.length})</h3>
+                            <div className="mt-4 pt-4 border-t border-slate-600">
+                                <h3 className="font-semibold text-text-light mb-2">登録済み家族 ({settings.family.length})</h3>
                                 <ul className="space-y-1">
                                     {settings.family.map(fam => (
-                                        <li key={fam.id} className="text-sm p-2 bg-gray-50 rounded-lg flex justify-between items-center">
+                                        <li key={fam.id} className="text-sm p-2 bg-slate-700 rounded-lg flex justify-between items-center">
                                             {fam.name} ({fam.currentAge}歳)
+                                            <div className="flex space-x-2">
+                                                <button 
+                                                    onClick={() => handleEditStart(fam, 'family')}
+                                                    className="text-indigo-primary hover:text-indigo-400 transition duration-150 p-1 rounded-md"
+                                                    title="編集"
+                                                >
+                                                    <Edit size={16} />
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleDelete('family', fam.id)}
+                                                    className="text-red-alert hover:text-red-400 transition duration-150 p-1 rounded-md"
+                                                    title="削除"
+                                                >
+                                                    <Trash2 size={16} />
+                                                </button>
+                                            </div>
                                         </li>
                                     ))}
                                 </ul>
@@ -566,20 +1097,20 @@
 
                         {/* 5. データ管理 (新規追加) */}
                         <Card title="データ管理 (バックアップ)" className="lg:col-span-1">
-                            <p className="text-sm text-gray-600 mb-4">ブラウザのキャッシュクリアに備え、データをファイルに保存/復元できます。</p>
+                            <p className="text-sm text-slate-400 mb-4">ブラウザのキャッシュクリアに備え、データをファイルに保存/復元できます。</p>
                             
                             {/* エクスポートボタン */}
                             <button 
                                 onClick={handleExport}
-                                className="w-full mb-3 flex items-center justify-center space-x-2 bg-blue-500 text-white p-2 rounded-lg hover:bg-blue-600 transition duration-150 shadow-md"
+                                className="w-full mb-3 flex items-center justify-center space-x-2 bg-blue-600 text-white p-2 rounded-lg hover:bg-blue-700 transition duration-150 shadow-md"
                             >
                                 <Download size={18} />
                                 <span>データをエクスポート (保存)</span>
                             </button>
 
                             {/* インポートセクション */}
-                            <div className="border-t pt-4 mt-4">
-                                <label htmlFor="file-upload" className="w-full flex items-center justify-center space-x-2 bg-green-500 text-white p-2 rounded-lg hover:bg-green-600 transition duration-150 shadow-md cursor-pointer">
+                            <div className="border-t border-slate-600 pt-4 mt-4">
+                                <label htmlFor="file-upload" className="w-full flex items-center justify-center space-x-2 bg-green-primary text-white p-2 rounded-lg hover:bg-emerald-600 transition duration-150 shadow-md cursor-pointer">
                                     <Upload size={18} />
                                     <span>データをインポート (復元)</span>
                                 </label>
@@ -591,7 +1122,7 @@
                                     accept=".json"
                                     className="hidden"
                                 />
-                                <p className="text-xs text-gray-500 mt-2 text-center">※JSONファイルのみ対応</p>
+                                <p className="text-xs text-slate-400 mt-2 text-center">※JSONファイルのみ対応</p>
                             </div>
                         </Card>
 
@@ -610,16 +1141,17 @@
                                         label="金額 (円)"
                                         id="expenseAmount"
                                         type="number"
+                                        step="1"
                                         value={expenseAmount}
                                         onChange={(e) => setExpenseAmount(e.target.value)}
                                         required
                                     />
                                      <div className="flex-1">
-                                        <label className="block text-sm font-medium text-gray-700">間隔 (年)</label>
+                                        <label className="block text-sm font-medium text-text-light">間隔 (年)</label>
                                         <select 
                                             value={expenseInterval} 
                                             onChange={(e) => setExpenseInterval(e.target.value)}
-                                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                                            className="mt-1 block w-full px-3 py-2 border border-slate-600 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-primary focus:border-indigo-primary bg-slate-700 text-text-light"
                                         >
                                             <option value="1">1年ごと</option>
                                             <option value="2">2年ごと</option>
@@ -628,26 +1160,42 @@
                                         </select>
                                     </div>
                                     <div className="flex-1">
-                                        <label className="block text-sm font-medium text-gray-700">初回支払月</label>
+                                        <label className="block text-sm font-medium text-text-light">初回支払月</label>
                                         <input
                                             type="month"
                                             value={expenseStartMonth}
                                             onChange={(e) => setExpenseStartMonth(e.target.value)}
-                                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                                            className="mt-1 block w-full px-3 py-2 border border-slate-600 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-primary focus:border-indigo-primary bg-slate-700 text-text-light"
                                         />
                                     </div>
                                 </div>
                                
-                                <button type="submit" className="w-full bg-indigo-500 text-white p-2 rounded-lg hover:bg-indigo-600 transition duration-150 shadow-md">
+                                <button type="submit" className="w-full mt-2 bg-indigo-primary text-white p-2 rounded-lg hover:bg-indigo-hover transition duration-150 shadow-md">
                                     支出を追加
                                 </button>
                             </form>
-                            <div className="mt-4 pt-4 border-t border-gray-100">
-                                <h3 className="font-semibold text-gray-700 mb-2">定期支出 ({settings.recurringExpenses.length})</h3>
+                            <div className="mt-4 pt-4 border-t border-slate-600">
+                                <h3 className="font-semibold text-text-light mb-2">定期支出 ({settings.recurringExpenses.length})</h3>
                                 <ul className="space-y-1 text-sm">
                                     {settings.recurringExpenses.map(exp => (
-                                        <li key={exp.id} className="p-2 bg-gray-50 rounded-lg">
-                                            {exp.name}: {formatCurrency(exp.amount)} / {exp.intervalYears}年
+                                        <li key={exp.id} className="p-2 bg-slate-700 rounded-lg flex justify-between items-center">
+                                            <span>{exp.name}: {formatCurrency(exp.amount)} / {exp.intervalYears}年 (初回: {exp.startMonthYear})</span>
+                                            <div className="flex space-x-2">
+                                                <button 
+                                                    onClick={() => handleEditStart(exp, 'expense')}
+                                                    className="text-indigo-primary hover:text-indigo-400 transition duration-150 p-1 rounded-md"
+                                                    title="編集"
+                                                >
+                                                    <Edit size={16} />
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleDelete('expense', exp.id)}
+                                                    className="text-red-alert hover:text-red-400 transition duration-150 p-1 rounded-md"
+                                                    title="削除"
+                                                >
+                                                    <Trash2 size={16} />
+                                                </button>
+                                            </div>
                                         </li>
                                     ))}
                                 </ul>
@@ -672,18 +1220,19 @@
                                             label="金額 (円)"
                                             id="eventAmount"
                                             type="number"
+                                            step="1"
                                             value={eventAmount}
                                             onChange={(e) => setEventAmount(e.target.value)}
                                             required
                                         />
                                     </div>
                                     <div className="md:col-span-1">
-                                        <label className="block text-sm font-medium text-gray-700">対象者</label>
+                                        <label className="block text-sm font-medium text-text-light">対象者</label>
                                         <select 
                                             value={eventTargetMember} 
                                             onChange={(e) => setEventTargetMember(e.target.value)}
                                             required
-                                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                                            className="mt-1 block w-full px-3 py-2 border border-slate-600 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-primary focus:border-indigo-primary bg-slate-700 text-text-light"
                                         >
                                             {settings.family.map(fam => (
                                                 <option key={fam.id} value={fam.id}>{fam.name} ({fam.currentAge}歳)</option>
@@ -696,35 +1245,52 @@
                                             label="対象年齢 (〜歳)"
                                             id="eventTargetAge"
                                             type="number"
+                                            step="1"
                                             value={eventTargetAge}
                                             onChange={(e) => setEventTargetAge(e.target.value)}
                                             required
                                         />
                                     </div>
                                     <div className="md:col-span-1">
-                                        <label className="block text-sm font-medium text-gray-700">発生月 (1-12)</label>
+                                        <label className="block text-sm font-medium text-text-light">発生月 (1-12)</label>
                                         <select 
                                             value={eventTargetMonth} 
                                             onChange={(e) => setEventTargetMonth(e.target.value)}
                                             required
-                                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                                            className="mt-1 block w-full px-3 py-2 border border-slate-600 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-primary focus:border-indigo-primary bg-slate-700 text-text-light"
                                         >
                                             {[...Array(12).keys()].map(i => <option key={i + 1} value={i + 1}>{i + 1}月</option>)}
                                         </select>
                                     </div>
                                 </div>
-                                <button type="submit" className="w-full bg-indigo-500 text-white p-2 rounded-lg hover:bg-indigo-600 transition duration-150 shadow-md">
+                                <button type="submit" className="w-full bg-indigo-primary text-white p-2 rounded-lg hover:bg-indigo-hover transition duration-150 shadow-md">
                                     イベント支出を追加
                                 </button>
                             </form>
-                            <div className="mt-4 pt-4 border-t border-gray-100">
-                                <h3 className="font-semibold text-gray-700 mb-2">登録済みイベント ({settings.futureEvents.length})</h3>
+                            <div className="mt-4 pt-4 border-t border-slate-600">
+                                <h3 className="font-semibold text-text-light mb-2">登録済みイベント ({settings.futureEvents.length})</h3>
                                 <ul className="space-y-1 text-sm">
                                     {settings.futureEvents.map(event => {
                                         const fam = settings.family.find(f => f.id === event.targetFamilyMemberId);
                                         return (
-                                            <li key={event.id} className="p-2 bg-gray-50 rounded-lg">
-                                                {event.name} ({formatCurrency(event.amount)}): {fam?.name}が{event.targetAge}歳になる{event.targetMonth}月
+                                            <li key={event.id} className="p-2 bg-slate-700 rounded-lg flex justify-between items-center">
+                                                <span>{event.name} ({formatCurrency(event.amount)}): {fam?.name}が{event.targetAge}歳になる{event.targetMonth}月</span>
+                                                <div className="flex space-x-2">
+                                                    <button 
+                                                        onClick={() => handleEditStart(event, 'event')}
+                                                        className="text-indigo-primary hover:text-indigo-400 transition duration-150 p-1 rounded-md"
+                                                        title="編集"
+                                                    >
+                                                        <Edit size={16} />
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => handleDelete('event', event.id)}
+                                                        className="text-red-alert hover:text-red-400 transition duration-150 p-1 rounded-md"
+                                                        title="削除"
+                                                    >
+                                                        <Trash2 size={16} />
+                                                    </button>
+                                                </div>
                                             </li>
                                         );
                                     })}
@@ -736,60 +1302,124 @@
             };
 
             const ProjectionView = () => {
+                // 変更点3: 予測期間切り替えUIを追加
+                const projectionYearsOptions = [10, 20, 30];
+                
+                const { totalBalance: lastBalance, monthYear: lastBalanceMonthYear } = latestBalanceInfo;
+                
+                // 破産予測月 (残高が初めて0を下回る月)
+                const firstNegativeMonth = projection.find(p => p.balance < 0);
+                const projectedBankruptMonthYear = firstNegativeMonth ? firstNegativeMonth.monthYear : null;
+                const projectedBankruptDate = projectedBankruptMonthYear ? monthYearToDate(projectedBankruptMonthYear) : null;
+                // 現在からの差を計算する代わりに、予測月までの月数を表示
+                const monthsToBankrupt = firstNegativeMonth ? projection.findIndex(p => p.balance < 0) + 1 : null;
+
                 return (
                     <div className="p-4 space-y-6">
+                        {/* 予測期間切り替えコントロール */}
+                        <Card title="予測期間の選択">
+                            <div className="flex space-x-4">
+                                {projectionYearsOptions.map(years => (
+                                    <button
+                                        key={years}
+                                        onClick={() => handleProjectionYearsChange(years)}
+                                        className={`flex-1 p-3 font-bold rounded-lg transition duration-150 border-2
+                                            ${projectionYears === years
+                                                ? 'bg-indigo-primary text-white border-indigo-primary shadow-lg'
+                                                : 'bg-slate-700 text-text-light border-slate-600 hover:bg-slate-600'
+                                            }`}
+                                    >
+                                        {years} 年間 ({years * 12} ヶ月) 予測
+                                    </button>
+                                ))}
+                            </div>
+                        </Card>
+                        
+                        {/* グラフコンポーネントを配置 */}
+                        <BalanceChart 
+                            settings={settings} 
+                            projection={projection} 
+                            formatCurrency={formatCurrency}
+                            projectionYears={projectionYears} // 修正: 予測年数を渡す
+                        />
+
                         <Card title="将来予測サマリー">
-                            <div className="flex justify-around items-center text-center">
-                                <div className="p-4 bg-indigo-50 rounded-lg flex-1 mx-2">
-                                    <p className="text-sm text-gray-500">最新残高 (全口座合計)</p>
-                                    <p className="text-2xl font-bold text-indigo-700">
-                                        {settings.balances.length > 0 ? formatCurrency(settings.balances[settings.balances.length - 1].totalBalance) : '---'}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
+                                <div className="p-4 bg-slate-700 rounded-lg border border-slate-600">
+                                    <p className="text-sm text-slate-400">最新残高 (全口座合計)</p>
+                                    <p className="text-sm font-semibold text-slate-300">
+                                        ({lastBalanceMonthYear} 月末時点)
+                                    </p>
+                                    <p className="text-2xl font-bold text-indigo-primary">
+                                        {formatCurrency(lastBalance)}
                                     </p>
                                 </div>
-                                <div className="p-4 bg-green-50 rounded-lg flex-1 mx-2">
-                                    <p className="text-sm text-gray-500 font-bold">定常的な月間収支 (特別支出調整後)</p>
-                                    <p className="text-2xl font-bold text-green-700">
+                                <div className="p-4 bg-slate-700 rounded-lg border border-slate-600">
+                                    <p className="text-sm text-slate-400 font-bold">定常的な月間収支 (特別支出調整後)</p>
+                                    <p className="text-2xl font-bold text-green-primary">
                                         {formatCurrency(averageMonthlyChange)}
                                     </p>
-                                    <p className="text-xs text-gray-500 mt-1">
+                                    <p className="text-xs text-slate-400 mt-1">
                                         ※ この収支に定期・イベント支出を加えて将来予測します。
                                     </p>
+                                </div>
+                                <div className={`p-4 rounded-lg border border-slate-600 ${projectedBankruptDate ? 'bg-red-900 bg-opacity-20 text-red-alert' : 'bg-slate-700'}`}>
+                                    <p className="text-sm text-slate-400 font-bold">破産予測</p>
+                                    <p className="text-xl font-bold">
+                                        {projectedBankruptDate 
+                                            // 修正: 選択された予測期間内に破産しない場合は「X年間は安全」と表示
+                                            ? `${projectedBankruptDate.getFullYear()}年${projectedBankruptDate.getMonth() + 1}月頃`
+                                            : `${projectionYears}年間は安全`
+                                        }
+                                    </p>
+                                    {projectedBankruptDate && (
+                                        <p className="text-xs mt-1 text-red-alert">
+                                            約<span className="font-bold">{Math.floor(monthsToBankrupt / 12)}年{monthsToBankrupt % 12}ヶ月後</span>に貯蓄が尽きる可能性があります。
+                                        </p>
+                                    )}
                                 </div>
                             </div>
                         </Card>
 
                         {warning && (
-                            <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-lg flex items-start">
+                            <div className="bg-yellow-900 bg-opacity-20 border-l-4 border-yellow-500 text-yellow-300 p-4 rounded-lg flex items-start">
                                 <AlertTriangle size={20} className="mt-1 mr-3 flex-shrink-0" />
                                 <p className="text-sm">{warning}</p>
                             </div>
                         )}
 
-                        <Card title="10年間 (120ヶ月) の将来残高予測">
+                        {/* 修正: タイトルに予測月数を反映 */}
+                        <Card title={`${projectionYears}年間 (${projectionMonths}ヶ月) の将来残高予測 詳細`}>
                             <div className="max-h-[600px] overflow-y-auto">
-                                <table className="min-w-full divide-y divide-gray-200">
-                                    <thead className="bg-gray-50 sticky top-0">
+                                <table className="min-w-full divide-y divide-slate-600">
+                                    <thead className="bg-slate-700 sticky top-0">
                                         <tr>
-                                            <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">対象月</th>
-                                            <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">予測残高</th>
-                                            <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">特別支出</th>
-                                            <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">備考</th>
+                                            <th className="px-3 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">対象月</th>
+                                            <th className="px-3 py-3 text-right text-xs font-medium text-slate-400 uppercase tracking-wider">予測残高</th>
+                                            <th className="px-3 py-3 text-right text-xs font-medium text-slate-400 uppercase tracking-wider">特別支出</th>
+                                            <th className="px-3 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">備考</th>
                                         </tr>
                                     </thead>
-                                    <tbody className="bg-white divide-y divide-gray-200">
+                                    <tbody className="bg-bg-card divide-y divide-slate-600">
                                         {projection.map((item, index) => (
-                                            <tr key={index} className={item.isEventMonth ? 'bg-red-50 font-medium' : index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                                                <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900">{item.monthYear}</td>
-                                                <td className={`px-3 py-2 whitespace-nowrap text-sm text-right ${item.balance < 0 ? 'text-red-600 font-bold' : 'text-gray-900'}`}>
+                                            <tr 
+                                                key={index} 
+                                                className={`
+                                                    ${item.isEventMonth ? 'bg-indigo-900 bg-opacity-20 font-medium' : index % 2 === 0 ? 'bg-bg-card' : 'bg-slate-700'}
+                                                    ${item.balance < 0 ? 'border-l-4 border-red-alert' : ''}
+                                                `}
+                                            >
+                                                <td className="px-3 py-2 whitespace-nowrap text-sm text-text-light">{item.monthYear}</td>
+                                                <td className={`px-3 py-2 whitespace-nowrap text-sm text-right ${item.balance < 0 ? 'text-red-alert font-bold' : 'text-green-primary'}`}>
                                                     {formatCurrency(item.balance)}
                                                 </td>
-                                                <td className="px-3 py-2 whitespace-nowrap text-sm text-right text-red-600">
+                                                <td className="px-3 py-2 whitespace-nowrap text-sm text-right text-red-alert">
                                                     {item.monthlyOutflow > 0 ? formatCurrency(item.monthlyOutflow) : '-'}
                                                 </td>
-                                                <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-500">
+                                                <td className="px-3 py-2 whitespace-nowrap text-xs text-slate-400">
                                                     {item.isEventMonth && (
-                                                        <span className="bg-red-200 text-red-800 p-1 rounded-full text-xs">
-                                                            イベント/定期支出あり
+                                                        <span className="bg-indigo-primary bg-opacity-50 text-white p-1 rounded-full text-xs">
+                                                            特別支出
                                                         </span>
                                                     )}
                                                 </td>
@@ -798,7 +1428,7 @@
                                     </tbody>
                                 </table>
                                 {projection.length === 0 && (
-                                    <p className="text-center py-8 text-gray-500">予測を生成するには、まず設定と残高を入力してください。</p>
+                                    <p className="text-center py-8 text-slate-400">予測を生成するには、まず設定と残高を入力してください。</p>
                                 )}
                             </div>
                         </Card>
@@ -807,23 +1437,30 @@
             };
 
             return (
-                <div className="font-['Inter'] antialiased p-4 sm:p-8">
+                <div className="font-sans antialiased p-4 sm:p-8 max-w-7xl mx-auto">
+                    {/* 削除確認モーダル */}
+                    <ConfirmActionModal 
+                        action={confirmAction}
+                        onConfirm={executeDelete}
+                        onCancel={() => setConfirmAction(null)}
+                    />
+
                     <header className="mb-6">
-                        <h1 className="text-3xl font-extrabold text-gray-900 flex items-center">
-                            <DollarSign size={28} className="text-indigo-600 mr-2" />
+                        <h1 className="text-4xl font-extrabold text-text-light flex items-center">
+                            <DollarSign size={32} className="text-indigo-primary mr-2" />
                             未来家計簿
                         </h1>
-                        <p className="text-sm text-gray-500 mt-1">
-                            データはローカルストレージに保存されますが、設定タブでファイルにバックアップできます。
+                        <p className="text-sm text-slate-400 mt-1">
+                            データはローカルストレージに保存されます。ファイルにバックアップすることを推奨します。
                         </p>
                         {message && (
-                            <div className="mt-3 p-3 text-sm rounded-lg bg-indigo-100 text-indigo-700 font-medium transition duration-300 shadow-sm">
+                            <div className="mt-3 p-3 text-sm rounded-lg bg-indigo-900 bg-opacity-40 text-indigo-300 font-medium transition duration-300 shadow-lg">
                                 {message}
                             </div>
                         )}
                     </header>
 
-                    <nav className="flex mb-6 bg-white rounded-xl shadow-lg p-1">
+                    <nav className="flex mb-6 bg-bg-card rounded-2xl shadow-xl p-1 space-x-1">
                         <TabButton id="balance" label="残高入力" Icon={Scale} />
                         <TabButton id="setting" label="設定・支出登録" Icon={Settings} />
                         <TabButton id="projection" label="将来予測" Icon={TrendingUp} />
