@@ -891,10 +891,21 @@ const renderBalanceInput = (container) => {
     const today = new Date();
     const defaultMonth = formatDateToYM(today);
 
+    // 選択された月に対応する既存の残高データを検索
+    const getBalanceDataForMonth = (month) => {
+        return appData.monthlyBalances.find(item => item.month === month);
+    };
+    
+    // 初期表示時に使用するデータ（最新の実績月 or 今月）
+    // NOTE: 以前はlatestDataを使っていましたが、ここでは入力フォームの初期値として使いたいので、
+    // 今月（defaultMonth）に登録済みのデータがあればそれを使い、なければ全口座0円から開始する。
+    const initialBalanceData = getBalanceDataForMonth(defaultMonth);
+    let initialTotal = initialBalanceData ? initialBalanceData.total : 0;
+
+
     let accountInputs = appData.accounts.map(acc => {
-        // 最新の残高データを取得し、該当口座の値を初期値として使用
-        const latestData = [...appData.monthlyBalances].sort((a, b) => b.month.localeCompare(a.month)).find(item => item.month === defaultMonth);
-        const initialValue = latestData ? (latestData.accounts[acc.id] || 0) : 0;
+        // 既存のデータがあればその口座の値を、なければ0を初期値として使用
+        const initialValue = initialBalanceData ? (initialBalanceData.accounts[acc.id] || 0) : 0;
 
         return `
             <div class="mb-3">
@@ -935,7 +946,7 @@ const renderBalanceInput = (container) => {
 
                     <div class="text-lg font-bold pt-3 border-t border-gray-700 flex justify-between">
                         <span>合計残高 (自動計算):</span>
-                        <span id="current-total-balance" class="text-green-400">${formatCurrency(0)}</span>
+                        <span id="current-total-balance" class="${initialTotal < 0 ? 'text-red-400' : 'text-green-400'} font-bold">${formatCurrency(initialTotal)}</span>
                     </div>
 
                     <button type="submit" class="w-full py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition duration-150">残高を登録・更新</button>
@@ -955,9 +966,34 @@ const renderBalanceInput = (container) => {
         document.querySelectorAll('.balance-input').forEach(input => {
             input.addEventListener('input', updateBalanceTotal);
         });
+        
+        // ★改修箇所②: 月選択時の口座残高の反映ロジックを追加
+        document.getElementById('balance-month')?.addEventListener('change', (e) => {
+            const selectedMonth = e.target.value;
+            const existingData = appData.monthlyBalances.find(item => item.month === selectedMonth);
+            
+            let newTotal = 0;
+            
+            document.querySelectorAll('.balance-input').forEach(input => {
+                const accountId = input.dataset.id;
+                let balance = 0;
+                
+                if (existingData) {
+                    // 既存データがあればその値を設定
+                    balance = existingData.accounts[accountId] || 0;
+                }
+                
+                input.value = balance;
+                newTotal += balance;
+            });
+            
+            // 合計残高を更新
+            updateBalanceTotal(newTotal);
+        });
     }
-     // 初期合計残高の更新
-    if (appData.accounts.length > 0) updateBalanceTotal();
+     // 初期合計残高の更新（既にinitialTotalが設定されているため、不要だが念のため）
+    // if (appData.accounts.length > 0) updateBalanceTotal(initialTotal);
+    
     // Lucideアイコンを再描画
     if (typeof lucide !== 'undefined' && lucide.createIcons) {
         lucide.createIcons();
@@ -966,12 +1002,18 @@ const renderBalanceInput = (container) => {
 
 /**
  * 口座残高入力時の合計残高をリアルタイムで更新する。
+ * @param {number | null} initialTotal - 強制的に設定する初期合計値（月変更時など）
  */
-const updateBalanceTotal = () => {
+const updateBalanceTotal = (initialTotal = null) => {
     let total = 0;
-    document.querySelectorAll('.balance-input').forEach(input => {
-        total += Number(input.value) || 0;
-    });
+    if (initialTotal !== null) {
+        total = initialTotal;
+    } else {
+        document.querySelectorAll('.balance-input').forEach(input => {
+            total += Number(input.value) || 0;
+        });
+    }
+    
     const totalSpan = document.getElementById('current-total-balance');
     if (totalSpan) {
         totalSpan.textContent = formatCurrency(total);
