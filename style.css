@@ -1,0 +1,54 @@
+/* ダークテーマの基本設定とフォント */
+:root {
+    --primary-bg: #111827; /* Gray-900 */
+    --secondary-bg: #1f2937; /* Gray-800 */
+    --text-color: #f3f4f6; /* Gray-100 */
+    --accent-color: #3b82f6; /* Blue-500 */
+    --alert-color: #ef4444; /* Red-500 */
+}
+body {
+    background-color: var(--primary-bg);
+    color: var(--text-color);
+    /* フォントは環境に応じて適宜変更してください */
+    font-family: 'Inter', 'Noto Sans JP', sans-serif; 
+    /* ナビゲーションバーの高さ (h-16=64px) よりも大きく、さらに余裕を持たせる */
+    /* 100pxを維持 */
+    margin-bottom: 100px; 
+}
+.container-main {
+    max-width: 640px;
+    margin: auto;
+    /* body margin-bottom と合わせる */
+    min-height: calc(100vh - 100px); 
+    /* コンテンツがナビバーの裏に隠れないように下部のパディングを増やす (40pxを維持) */
+    padding-bottom: 40px; 
+}
+/* スクロールバーの非表示（モバイルビューを想定） */
+.hide-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+.hide-scrollbar {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+}
+.nav-item-active {
+    color: var(--accent-color);
+    border-top: 2px solid var(--accent-color);
+}
+.card {
+    background-color: var(--secondary-bg);
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+input, select {
+    background-color: #374151; /* Gray-700 */
+    color: var(--text-color);
+    border: 1px solid #4b5563; /* Gray-600 */
+}
+/* Chart.js 用のレスポンシブコンテナ */
+#chart-container {
+    position: relative;
+    height: 40vh;
+    width: 100%;
+}
