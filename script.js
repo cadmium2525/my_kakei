@@ -107,6 +107,9 @@ const showMessage = (title, message, isConfirm = false) => {
  */
 const formatCurrency = (num) => {
     if (num === null || num === undefined) return 'N/A';
+    // NaN または Infinity の場合は 'N/A' を返すなどの対応を追加するとより堅牢になりますが、
+    // 今回は Number() が返す NaN に対応するため、このまま Number.isNaN を使用
+    if (Number.isNaN(num)) return 'N/A';
     return new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY', maximumFractionDigits: 0 }).format(num);
 };
 
@@ -897,14 +900,13 @@ const renderBalanceInput = (container) => {
     };
     
     // 初期表示時に使用するデータ（最新の実績月 or 今月）
-    // NOTE: 以前はlatestDataを使っていましたが、ここでは入力フォームの初期値として使いたいので、
-    // 今月（defaultMonth）に登録済みのデータがあればそれを使い、なければ全口座0円から開始する。
     const initialBalanceData = getBalanceDataForMonth(defaultMonth);
-    let initialTotal = initialBalanceData ? initialBalanceData.total : 0;
+    let initialTotal = initialBalanceData ? initialBalanceData.total : 0; // 既存データがあればその合計値、なければ 0
 
-
+    // 口座入力フィールドのHTMLを生成
     let accountInputs = appData.accounts.map(acc => {
         // 既存のデータがあればその口座の値を、なければ0を初期値として使用
+        // valueに空文字が入ると、Number(input.value)がNaNになる可能性があるため、0を明示的に設定
         const initialValue = initialBalanceData ? (initialBalanceData.accounts[acc.id] || 0) : 0;
 
         return `
@@ -964,7 +966,9 @@ const renderBalanceInput = (container) => {
     if (appData.accounts.length > 0) {
         document.getElementById('balance-input-form')?.addEventListener('submit', handleBalanceInput);
         document.querySelectorAll('.balance-input').forEach(input => {
+            // ★修正箇所①: イベントリスナーを 'input' に変更し、リアルタイム更新
             input.addEventListener('input', updateBalanceTotal);
+            // 初期表示で空文字の場合に'0'に設定する処理を、updateBalanceTotal側で対応
         });
         
         // ★改修箇所②: 月選択時の口座残高の反映ロジックを追加
@@ -988,12 +992,13 @@ const renderBalanceInput = (container) => {
             });
             
             // 合計残高を更新
-            updateBalanceTotal(newTotal);
+            updateBalanceTotal(); // 初期値渡しをやめて、DOMから再計算させる
         });
+        
+        // ★修正箇所③: 描画後に一度合計を計算し直して、DOMに反映する (特に初期値が0でない場合)
+        updateBalanceTotal();
     }
-     // 初期合計残高の更新（既にinitialTotalが設定されているため、不要だが念のため）
-    // if (appData.accounts.length > 0) updateBalanceTotal(initialTotal);
-    
+     
     // Lucideアイコンを再描画
     if (typeof lucide !== 'undefined' && lucide.createIcons) {
         lucide.createIcons();
@@ -1002,20 +1007,42 @@ const renderBalanceInput = (container) => {
 
 /**
  * 口座残高入力時の合計残高をリアルタイムで更新する。
- * @param {number | null} initialTotal - 強制的に設定する初期合計値（月変更時など）
+ * @param {number | null} initialTotal - 強制的に設定する初期合計値（月変更時など、現在は未使用）
  */
 const updateBalanceTotal = (initialTotal = null) => {
     let total = 0;
-    if (initialTotal !== null) {
-        total = initialTotal;
-    } else {
-        document.querySelectorAll('.balance-input').forEach(input => {
-            total += Number(input.value) || 0;
-        });
-    }
+    
+    // initialTotalが渡された場合の処理は削除し、常にDOMから計算するようにする
+    // if (initialTotal !== null) {
+    //     total = initialTotal;
+    // } else {
+    
+    document.querySelectorAll('.balance-input').forEach(input => {
+        // ★修正点: input.valueが空文字の場合は Number('') は 0 になるが、
+        // 入力が非数でないことを確認するために Number(input.value) || 0 を使用。
+        // input[type=number]では空文字が許可されますが、Number(空文字)は0です。
+        // ただし、もし `required` がない場合に非数値が入る可能性も考慮し、
+        // Number(input.value) で NaN になる可能性を排除するために、
+        // より安全な方法として Number.parseFloat と isNaN を使うこともできますが、
+        // 既存のコードを尊重しつつ、空文字で NaN にならないことを確認します。
+        
+        // input.value が空文字 ('') の場合、Number(input.value) は 0 になり、total は 0 が加算されます。
+        // input.value が "123" の場合、Number(input.value) は 123 になります。
+        // ここで問題だったのは、`updateBalanceTotal(initialTotal)` の引数渡しと、
+        // `formatCurrency` の中での `formatCurrency(initialTotal)` が NaN になってしまうことでした。
+        // 修正後のコードでは、描画直後の初期値の合計は `renderBalanceInput` で DOM に設定され、
+        // その後 `updateBalanceTotal()` が呼び出されて、DOMから値を取得して再計算されます。
+        
+        // Number(input.value) は空文字の場合 0 になります。NaNになるのは "abc" などの場合です。
+        const amount = Number(input.value) || 0;
+        total += amount;
+    });
+    // } // initialTotal のブロックは削除
+
     
     const totalSpan = document.getElementById('current-total-balance');
     if (totalSpan) {
+        // totalがNaNにならないことを前提に、formatCurrencyを呼び出す
         totalSpan.textContent = formatCurrency(total);
         totalSpan.classList.toggle('text-red-400', total < 0);
         totalSpan.classList.toggle('text-green-400', total >= 0);
@@ -1168,11 +1195,18 @@ const handleBalanceInput = (e) => {
     let allInputsValid = true;
 
     document.querySelectorAll('.balance-input').forEach(input => {
-        const amount = Number(input.value);
+        // input.value が空文字または不正な文字列の場合、Number() は NaN を返す可能性がある
+        // required属性があるため空文字は送信されないはずだが、NaN対策を強化
+        const amount = Number(input.value); 
+        
+        // ユーザーが入力しない場合 (空文字) は Number('') = 0 なので OK
+        // ユーザーが数値以外を入力した場合 (例: "abc") は Number("abc") = NaN
+        // NaN のチェックを追加
         if (isNaN(amount)) {
             allInputsValid = false;
             return;
         }
+        
         const accountId = input.dataset.id;
         accountBalances[accountId] = amount;
         total += amount;
