@@ -1,22 +1,36 @@
-// ====================================================================
+﻿// ====================================================================
 // I. グローバル設定とデータ構造
 // ====================================================================
 
 const APP_DATA_KEY = 'futureflow_app_data_v1';
-const MAX_PREDICTION_MONTHS = 360; // 30年
+const MAX_PREDICTION_MONTHS = 1200; // 100年 (30年制限を撤廃)
 
 let appData = {
     accounts: [], // [{ id: string, name: string }]
     families: [], // [{ id: string, name: string, age: number, birthMonth: number (1-12) }]
     recurringExpenses: [], // [{ id: string, name: string, amount: number, intervalYears: number (1-5), startYM: string ('YYYY-MM') }]
+    loans: [], // [{ id: string, name: string, monthlyAmount: number, startYM: string, endYM: string }]
     futureEvents: [], // [{ id: string, name: string, amount: number, familyId: string, targetAge: number, targetMonth: number (1-12) }]
     monthlyBalances: [], // [{ month: string ('YYYY-MM'), total: number, accounts: { accountId: number } }]
     settings: {
         predictionYears: 30, // 予測期間（年）
+        // monthlyIncome / yearlyBonus は廃止し、familyIncomesに移行
+        familyIncomes: {}, // { familyId: { monthly: number, bonus: number, retirementYM: string, severance: number, pension: number } }
+        currentLivingCost: 250000, // 現在の生活費 (円/月) - インフレ計算の基準
+        inflationRate: 1.0, // インフレ率（年%）
+        investmentMonthly: 30000, // 毎月の積立額 (円)
+        investmentYield: 4.0, // 運用利回り（年%）
+        educationMode: 'public', // 教育プラン: 'public' (公立), 'private' (私立)
+        childIndependenceAge: 22, // 子供の自立年齢
+        costReductionRate: 20, // 子供自立後の生活費削減率 (%)
+        licenseReturnAge: 75, // 免許返納年齢（車両費停止）
+        univHousingType: 'home', // 大学時の居住: 'home' (自宅), 'away' (自宅外)
+        univAllowance: 100000,   // 自宅外時の仕送り (月額)
+        salaryIncreaseAmount: 0, // 毎年の定期昇給額 (月額・円)
     },
 };
 
-const RECURRING_INTERVALS = [1, 2, 3, 4, 5];
+const RECURRING_INTERVALS = [1, 2, 3, 4, 5, 10, 15, 20];
 
 let currentScreen = 'dashboard';
 let currentSettingTab = 'family-account';
@@ -168,7 +182,7 @@ const getRecurringExpenseForMonth = (targetYM, firstBalanceYM) => {
     const [targetYear, targetMonthNum] = targetYM.split('-').map(Number);
     const targetDate = parseYearMonth(targetYM);
     const firstDate = parseYearMonth(firstBalanceYM);
-    
+
     let expenseTotal = 0;
 
     appData.recurringExpenses.forEach(exp => {
@@ -185,9 +199,9 @@ const getRecurringExpenseForMonth = (targetYM, firstBalanceYM) => {
         if (targetMonthNum === startMonthNum) {
             // 開始月から何年経過したか
             const yearsPassed = targetYear - startYear;
-            
+
             if (yearsPassed % intervalYears === 0) {
-                 expenseTotal += exp.amount;
+                expenseTotal += exp.amount;
             }
         }
     });
@@ -203,126 +217,440 @@ const getRecurringExpenseForMonth = (targetYM, firstBalanceYM) => {
  * @returns {number | null} 平均コア収支 (JPY/month) または null (データ不足)
  */
 const calculateCoreMonthlyChange = () => {
-    // ソートされたコピーを使用して元のデータを変更しないようにする
+    // このレガシー関数は calculateNormalizedCoreBalance に置き換えられますが、
+    // 単純な平均を知りたい場合のために残すか、新しいロジックに統合します。
+    // 現状はUI表示用に使われているため、新しいロジックの結果を返すラッパーにします。
+    return calculateNormalizedCoreBalance();
+};
+
+/**
+ * 履歴データから「基礎キャッシュフロー（固定費除去後）」を算出する。
+ * (実績変化額 + その月に支払われた定期支出) の平均 = 何もしなくても生み出せる余力
+ */
+const calculateNormalizedCoreBalance = () => {
     const balances = [...appData.monthlyBalances].sort((a, b) => a.month.localeCompare(b.month));
+    if (balances.length < 2) return null;
 
-    if (balances.length < 2) {
-        return null;
-    }
-
-    const firstBalanceYM = balances[0].month;
-    const coreChanges = [];
+    const coreSurpluses = [];
 
     for (let i = 1; i < balances.length; i++) {
         const currentMonthYM = balances[i].month;
         const prevTotal = balances[i - 1].total;
         const currentTotal = balances[i].total;
 
-        // 1. 実際の残高変化額 (当月残高 - 前月残高)
+        // 1. 実績の変化額
         let actualChange = currentTotal - prevTotal;
 
-        // 2. 特別支出の除去 (定期支出 + 将来イベント)
-        let specialExpenseTotal = getRecurringExpenseForMonth(currentMonthYM, firstBalanceYM);
+        // 2. その月に支払われた「定期支出」を足し戻す (住宅ローンなどが引かれているなら、足し戻して「基礎体力」を見る)
+        let paidRecurring = getRecurringExpenseForMonth(currentMonthYM, balances[0].month);
 
-        // 将来イベントの計算 (過去実績に含まれるイベントは稀だが念のため)
-        const [currentYear, currentMonthNum] = currentMonthYM.split('-').map(Number);
-        appData.futureEvents.forEach(event => {
-            const familyMember = appData.families.find(f => f.id === event.familyId);
-            if (!familyMember) return;
+        // 2-B. 支払われているローンの除去 (ローンがある状態で実績が出ているなら、ローンがない状態の実力値に戻す)
+        let paidLoans = 0;
+        if (appData.loans) {
+            appData.loans.forEach(loan => {
+                // startYM <= current <= endYM
+                if (currentMonthYM >= loan.startYM && currentMonthYM <= loan.endYM) {
+                    paidLoans += loan.monthlyAmount;
+                }
+            });
+        }
 
-            // イベント発生年 (現在の年を基準に計算)
-            const now = new Date();
-            const nowYear = now.getFullYear();
-            const eventYear = (nowYear - familyMember.age) + event.targetAge;
-
-            if (eventYear === currentYear && event.targetMonth === currentMonthNum) {
-                specialExpenseTotal += event.amount;
+        // 3. 将来イベントも同様に足し戻す
+        let paidEvents = 0;
+        const [currYear, currMonth] = currentMonthYM.split('-').map(Number);
+        appData.futureEvents.forEach(evt => {
+            const fam = appData.families.find(f => f.id === evt.familyId);
+            if (fam) {
+                const now = new Date();
+                const eventYear = (now.getFullYear() - fam.age) + evt.targetAge;
+                if (eventYear === currYear && evt.targetMonth === currMonth) {
+                    paidEvents += evt.amount;
+                }
             }
         });
 
-        // 3. 定常的な月間変化 (コア収支) = 実際の変化額 + 特別支出 (支出を戻す)
-        const coreChange = actualChange + specialExpenseTotal;
-        coreChanges.push(coreChange);
+        // 基礎余力 = 実際の手残り + 払った固定費 + 払ったイベント費 + 払ったローン
+        coreSurpluses.push(actualChange + paidRecurring + paidEvents + paidLoans);
     }
 
-    // 4. 平均コア収支の決定
-    if (coreChanges.length === 0) return null;
-    const averageCoreChange = coreChanges.reduce((sum, val) => sum + val, 0) / coreChanges.length;
-    return Math.round(averageCoreChange);
+    if (coreSurpluses.length === 0) return 0;
+    const avg = coreSurpluses.reduce((a, b) => a + b, 0) / coreSurpluses.length;
+    return Math.round(avg);
 };
 
-/**
- * ロジック2 & 3: 将来の予測を実行する。
- * @returns {{ labels: string[], data: number[], crashMonth: string | null }} 予測結果
- */
-const runSimulation = () => {
-    // ソートされたコピーを使用
-    const balances = [...appData.monthlyBalances].sort((a, b) => a.month.localeCompare(b.month));
-    const predictionYears = appData.settings.predictionYears;
-    const maxMonths = Math.min(predictionYears * 12, MAX_PREDICTION_MONTHS);
+// 教育費概算 (月額) - 文部科学省「子供の学習費調査」などを参考に簡易化
+const EDUCATION_COSTS = {
+    // 月額換算 (塾・習い事などの学校外活動費含む概算)
+    // 公立コース: 小中高公立・大学国公立
+    // 私立コース: 小中高私立・大学私立 (理系・文系平均)
+    // 参照: 文部科学省「子供の学習費調査(R3)」, 日本政策金融公庫「教育費負担の実態調査(R3)」
+    public: {
+        kindergarten: 25000,   // 3-5歳 (幼児教育無償化後も給食費・バス代等はかかる)
+        elementary: 27000,     // 6-11歳 (学校教育費 + 学校外活動費)
+        juniorHigh: 45000,     // 12-14歳 (塾費用が増加する)
+        highSchool: 43000,     // 15-17歳 (公立高校授業料無償化所得制限ありだが、平均として計上)
+        university: 90000      // 18-21歳 (国公立授業料 + 通学定期/教科書等)
+    },
+    private: {
+        kindergarten: 45000,
+        elementary: 140000,    // 私立小は高額
+        juniorHigh: 120000,
+        highSchool: 90000,
+        university: 140000     // 私立大理系含む平均
+    }
+};
 
-    if (balances.length === 0) {
-        // シミュレーション不可だが、UI描画のために空データを返す
-        return { labels: [], data: [], crashMonth: null };
+// 成長に伴う生活費追加（教育費以外：食費、通信費、被服費、小遣いなど）
+// 現在の生活費に入っていると仮定し、そこからの増減を計算するために使用
+const GROWTH_EXPENSES = {
+    middleSchool: 10000, // 12-14歳: 食べ盛り、スマホ開始
+    highSchool: 15000,   // 15-17歳: ピーク、交際費増
+    college: 10000       // 18-22歳: 大人並みだがバイトもあるので少し減
+};
+
+const getGrowthExpense = (age) => {
+    if (age >= 12 && age <= 14) return GROWTH_EXPENSES.middleSchool;
+    if (age >= 15 && age <= 17) return GROWTH_EXPENSES.highSchool;
+    if (age >= 18 && age <= 22) return GROWTH_EXPENSES.college; // ～22歳まで
+    return 0;
+};
+
+const getEducationCost = (age, mode) => {
+    // 簡易ロジック: 年齢で学校種別を判定
+    // 3-5: 幼稚園, 6-11: 小学校, 12-14: 中学校, 15-17: 高校, 18-21: 大学
+
+    // 高校まで公立・大学私立パターン
+    if (mode === 'public_private_univ') {
+        if (age >= 3 && age <= 5) return EDUCATION_COSTS.public.kindergarten;
+        if (age >= 6 && age <= 11) return EDUCATION_COSTS.public.elementary;
+        if (age >= 12 && age <= 14) return EDUCATION_COSTS.public.juniorHigh;
+        if (age >= 15 && age <= 17) return EDUCATION_COSTS.public.highSchool;
+        if (age >= 18 && age <= 21) return EDUCATION_COSTS.private.university;
+        return 0;
     }
 
-    const averageCoreChange = calculateCoreMonthlyChange();
-    const latestBalance = balances[balances.length - 1]; // 修正：pop()を使わない
-    const firstBalanceYM = balances[0].month;
-    const startDate = addMonth(parseYearMonth(latestBalance.month)); // 予測は最新月の翌月から開始
+    const costs = EDUCATION_COSTS[mode];
+    if (age >= 3 && age <= 5) return costs.kindergarten;
+    if (age >= 6 && age <= 11) return costs.elementary;
+    if (age >= 12 && age <= 14) return costs.juniorHigh;
+    if (age >= 15 && age <= 17) return costs.highSchool;
+    if (age >= 18 && age <= 21) return costs.university;
+    return 0;
+};
 
-    let currentBalance = latestBalance.total;
+const runSimulation = (customSettings = null, customFamilies = null, customLoans = null, customRecurring = null) => {
+    // 引数がなければグローバルデータを使用
+    const s = customSettings || appData.settings;
+    const fams = customFamilies || appData.families;
+    const loans = customLoans || appData.loans;
+    const recurring = customRecurring || appData.recurringExpenses;
+
+    const balances = [...appData.monthlyBalances].sort((a, b) => a.month.localeCompare(b.month));
+    const predictionYears = s.predictionYears;
+    const maxMonths = Math.min(predictionYears * 12, MAX_PREDICTION_MONTHS);
+
+    // 実績がない場合でもシミュレーションできるように、デフォルト値を設定
+    // 実績があれば最新の残高をスタートにする
+    let currentTotal = 0;
+    let latestMonth = new Date().toISOString().slice(0, 7);
+
+    if (balances.length > 0) {
+        const latestBalance = balances[balances.length - 1];
+        currentTotal = latestBalance.total;
+        latestMonth = latestBalance.month;
+    }
+
+    let currentInvestment = 0; // 運用資産
+
+    // 日付管理
+    const startDate = addMonth(parseYearMonth(latestMonth));
     let currentMonthDate = startDate;
     let crashMonth = null;
 
     const result = {
-        labels: [latestBalance.month], // 実績の最新月をグラフの開始点として残す
-        data: [latestBalance.total],
+        labels: [latestMonth],
+        data: [currentTotal],     // 総資産 (現金 + 投資)
+        investmentData: [0],      // 投資資産の内訳
     };
 
-    // 月次シミュレーションを実行
+    // シミュレーション用家族年齢管理 (初期化)
+    // Deep Copy to avoid mutating original objects during simulation
+    const simFamilies = JSON.parse(JSON.stringify(fams));
+
+    // ベース収支パラメータ
+    const monthlyIncome = s.monthlyIncome || 0;
+    const monthlyBonus = (s.yearlyBonus || 0) / 12; // 平準化して加算
+
+    // 初期生活費 (インフレ前)
+    // ★修正: ユーザー入力値(s.currentLivingCost)は「現在の子供の状態」を含んでいる。
+    // そのため、「子供の成長コスト」を変動させるには、まず「子供コスト抜きのベース生活費」を逆算する必要がある。
+    // Base = Input - InitialGrowthCost
+    // Monthly = Base * Inf + CurrentGrowthCost * Inf
+
+    let initialGrowthCostSum = 0;
+    simFamilies.forEach(f => {
+        // 本人以外(simFamilies[0]除く) かつ 子供年齢
+        // ※simFamilies[0]は世帯主(親)と仮定
+        if (f !== simFamilies[0] && f.age <= s.childIndependenceAge) {
+            initialGrowthCostSum += getGrowthExpense(f.age);
+        }
+    });
+
+    // ベース生活費（大人だけの生活費 + 固定的な家計費）
+    // もしマイナスになる（入力が少なすぎる）場合は最低0にする
+    const baseLivingCost = Math.max(0, (s.currentLivingCost || 250000) - initialGrowthCostSum);
+
+    // 内訳集計用変数 (生涯累計)
+    let totalLivingCost = 0;
+    let totalEduCost = 0;
+    let totalLoanCost = 0;
+    let totalRecurringCost = 0;
+    let totalInvestCost = 0;
+
     for (let i = 0; i < maxMonths; i++) {
         const currentMonthYM = formatDateToYM(currentMonthDate);
-        let monthlyChange = averageCoreChange || 0; // 平均コア収支をベースに (データ不足なら0)
+        const currentYearNum = currentMonthDate.getFullYear();
+        const currentMonthNum = currentMonthDate.getMonth() + 1;
 
-        // 2. その月に発生する予定の「定期支出」や「将来イベント支出」を計算
+        // 経過年数
+        const yearsPassed = Math.floor(i / 12);
 
-        // 定期支出の計算
-        monthlyChange -= getRecurringExpenseForMonth(currentMonthYM, firstBalanceYM);
+        // ★インフレ率計算をここに移動 (収入にも適用するため)
+        const inflationFactor = Math.pow(1 + s.inflationRate / 100, yearsPassed);
 
-        // 将来イベントの計算 (ロジック2)
-        appData.futureEvents.forEach(event => {
-            const member = appData.families.find(f => f.id === event.familyId);
-            if (!member) return;
+        // A. 収入の加算 (家族ごと)
+        let monthlyIncomeTotal = 0;
+        const familyIncomes = s.familyIncomes || {};
 
-            const now = new Date();
-            const nowYear = now.getFullYear();
-            // イベント発生年 = (現在の年 - 対象家族の現在の年齢) + イベントの目標年齢
-            const eventYear = (nowYear - member.age) + event.targetAge;
+        appData.families.forEach(f => {
+            // 本人のシミュレーション年齢は simFamilies[index].age だが、
+            // incomeデータのキーは f.id。
+            // 退職判定は「年月」で行うため、年齢計算は補足的。
 
-            const [simYear, simMonthNum] = currentMonthYM.split('-').map(Number);
+            const inc = familyIncomes[f.id];
+            if (!inc) return;
 
-            if (eventYear === simYear && event.targetMonth === simMonthNum) {
-                monthlyChange -= event.amount;
+            // 退職チェック (年齢ベース)
+            // 年齢は1月に加算される。現在の年齢 >= 退職年齢 なら退職済みとみなす。
+            // 退職の瞬間(justRetired)は「年齢がRetireAgeになった年の1月」とする簡易ロジック
+
+            let isRetired = false;
+            let justRetiredThisMonth = false;
+
+            const retireAge = inc.retirementAge || 60;
+            const currentSimAge = simFamilies.find(sf => sf.id === f.id).age;
+
+            if (currentSimAge >= retireAge) {
+                isRetired = true;
+                // 今月が「退職年齢になった年の1月」なら退職月扱い
+                // (simAgeは1月に増えるので、増えた直後の1月 = 退職月)
+                if (currentSimAge === retireAge && currentMonthNum === 1) {
+                    justRetiredThisMonth = true;
+                }
+            }
+
+            if (isRetired) {
+                // 年金生活 (年金はインフレ連動と仮定)
+                monthlyIncomeTotal += (inc.pension * inflationFactor);
+            } else {
+                // 現役 (定額昇給ロジック: 月給に (昇給額 * 年数) を加算)
+                const yearlyIncrease = (s.salaryIncreaseAmount || 0) * yearsPassed;
+                const adjustedMonthly = inc.monthly + yearlyIncrease;
+
+                monthlyIncomeTotal += adjustedMonthly;
+
+                // ボーナス (平準化): 月給の増加率に合わせて連動させる
+                // Bonus * (NewMonthly / OldMonthly)
+                if (inc.bonus > 0) {
+                    const ratio = inc.monthly > 0 ? (adjustedMonthly / inc.monthly) : 1;
+                    const adjustedBonus = inc.bonus * ratio;
+                    monthlyIncomeTotal += (adjustedBonus / 12);
+                }
+            }
+
+            // 退職金の加算 (退職月のみ)
+            // 退職金はインフレ連動のままとする(将来価値)
+            if (justRetiredThisMonth) {
+                monthlyIncomeTotal += (inc.severance * inflationFactor);
+            }
+        });
+
+        let monthlyFlow = monthlyIncomeTotal;
+
+        // B. 支出の減算 (基本生活費 + インフレ)
+        // 増える生活費 = ベース生活費 * (1+r)^t
+        let currentMonthExpense = baseLivingCost * inflationFactor;
+
+        // C. ライフプラン補正
+        // 1月の時点で年齢を加算 (簡易)
+        if (currentMonthNum === 1 && i > 0) {
+            simFamilies.forEach(f => f.age++);
+        }
+
+        // C-1. 教育費 & 子供補正
+        let activeChildren = 0;
+        simFamilies.forEach(f => {
+            // 本人以外の家族を「子供」とみなす簡易判定 (本来は続柄が必要だが、年齢で判定)
+            // 25歳以下を子供とみなして計算
+            if (f.age <= s.childIndependenceAge) {
+                // 教育費
+                const eduCost = getEducationCost(f.age, s.educationMode);
+                monthlyFlow -= eduCost;
+                totalEduCost += eduCost; // 集計
+
+                // ★追加: 成長に伴う生活費増分
+                const growCost = getGrowthExpense(f.age);
+                // インフレ考慮
+                const inflatedGrowCost = growCost * inflationFactor;
+                monthlyFlow -= inflatedGrowCost;
+                // これは生活費の一部として計上
+                totalLivingCost += inflatedGrowCost;
+
+                // ★追加: 大学自宅外通学の仕送り (18-21歳)
+                if (f.age >= 18 && f.age <= 21 && s.univHousingType === 'away') {
+                    // 仕送り (インフレ考慮)
+                    const allowance = (s.univAllowance || 100000) * inflationFactor;
+                    monthlyFlow -= allowance;
+                    totalLivingCost += allowance; // 生活費の一部とする
+                }
+
+                activeChildren++;
             }
         });
 
 
-        // 3. 残高を更新
-        currentBalance += monthlyChange;
-        result.data.push(currentBalance);
+        // C-2. 自立後の生活費削減
+        if (fams.length > 1 && activeChildren === 0) {
+            // 削減適用: currentMonthExpense を減らす
+            const reductionAmount = currentMonthExpense * (s.costReductionRate / 100);
+            currentMonthExpense -= reductionAmount;
+        }
+
+        monthlyFlow -= currentMonthExpense;
+        totalLivingCost += currentMonthExpense; // 集計
+
+        // D-1. 定期支出 (数年に一度)
+        recurring.forEach(exp => {
+            // 免許返納チェック
+            const mainMember = simFamilies[0];
+            if (mainMember && mainMember.age >= s.licenseReturnAge) {
+                // カテゴリ指定 または 名称検索
+                if (exp.category === 'vehicle' || exp.name.includes("車") || exp.name.includes("Car") || exp.name.includes("保険")) {
+                    return; // 支出しない
+                }
+            }
+
+            if (currentMonthYM.localeCompare(exp.startYM) >= 0) {
+                const diffM = diffMonths(currentMonthYM, exp.startYM);
+                const intervalMonths = exp.intervalYears * 12;
+                if (intervalMonths > 0 && diffM % intervalMonths === 0) {
+                    monthlyFlow -= exp.amount;
+                    totalRecurringCost += exp.amount; // 集計
+                }
+            }
+        });
+
+        // D-2. ローン (毎月)
+        if (loans) {
+            loans.forEach(loan => {
+                if (currentMonthYM >= loan.startYM && currentMonthYM <= loan.endYM) {
+                    monthlyFlow -= loan.monthlyAmount;
+                    totalLoanCost += loan.monthlyAmount; // 集計
+                }
+            });
+        }
+
+        // E. 将来イベント
+        appData.futureEvents.forEach(evt => {
+            const fam = simFamilies.find(f => f.id === evt.familyId);
+            if (!fam) return;
+            const targetAge = evt.targetAge;
+            const isTargetMonth = evt.targetMonth === currentMonthNum;
+
+            if (fam.age === targetAge && isTargetMonth) {
+                monthlyFlow -= evt.amount;
+            }
+        });
+
+        // F. 資産運用
+        // 毎月の積立額を Cash から Investment に移動
+        let investAmount = s.investmentMonthly || 0;
+
+        // 破綻防止: 現金がマイナスでも積立は止める？ いったん続ける設定
+        monthlyFlow -= investAmount;
+        totalInvestCost += investAmount; // 集計(支出として扱うか資産移動として扱うかだが、キャッシュフロー的には支出)
+
+        // 運用の利回り計算 (月利)
+        // 年利 r% -> 月利 R = r / 12 / 100
+        const monthlyRate = (s.investmentYield || 0) / 100 / 12;
+
+        // 投資残高の増加 (先月までの残高 * 利回り + 今月の積立)
+        // 資産残高の更新
+        // ... (省略せず既存ロジック維持)
+        if (i === 0) {
+            // 初月
+            currentInvestment += investAmount;
+        } else {
+            // 運用益
+            currentInvestment = currentInvestment * (1 + s.investmentYield / 100 / 12) + investAmount;
+        }
+
+        // G. 総残高更新
+        // 総資産 = 現金残高(Income-Expense-Investで増減) + 投資残高(Invest+Profitで増減)
+        // Asset(t) = Asset(t-1) + (Income - Expense - Invest) + (Invest + Profit)
+        //          = Asset(t-1) + Income - Expense + Profit
+        // currentTotal は「総資産」として扱われていた。
+        // monthlyFlow は (Income - Expenses - Invest) なので
+        // currentTotal += monthlyFlow + investAmount; // 投資分は総資産から減らさない
+        // さらに運用益を加算
+        // if(i > 0) currentTotal += investmentGain; // investmentGain は currentInvestment の計算に含まれる
+
+        // currentTotal (総資産) の更新
+        // monthlyFlow は (収入 - 支出 - 積立投資額)
+        // currentTotal は総資産なので、積立投資額は現金から投資へ移動するだけで総資産は減らない。
+        // よって、monthlyFlow に積立投資額を戻して、運用益を加える。
+        currentTotal += monthlyFlow + investAmount; // 現金変動分 + 積立投資額
+        // 投資の運用益は currentInvestment に既に反映されているので、それを currentTotal にも反映
+        // ただし、currentInvestment は `currentInvestment = currentInvestment * (1 + monthlyRate) + investAmount;`
+        // と計算されているため、この `investAmount` は既に `monthlyFlow` から引かれているもの。
+        // したがって、`currentTotal` には `monthlyFlow` と `currentInvestment` の差分を足す。
+        // `currentTotal` は `latestBalance.total` から始まる「総資産」
+        // `currentInvestment` は「投資資産」
+        // `currentTotal` = `現金` + `投資`
+        // `現金` の変化 = `monthlyFlow` (収入 - 支出 - 積立)
+        // `投資` の変化 = `積立` + `運用益`
+        // `総資産` の変化 = `現金` の変化 + `投資` の変化
+        //                = `monthlyFlow` + (`積立` + `運用益`)
+        //                = (`収入 - 支出 - 積立`) + `積立` + `運用益`
+        //                = `収入 - 支出 + 運用益`
+
+        // 運用益を計算
+        const investmentProfit = (currentInvestment - investAmount) * monthlyRate;
+        currentTotal += monthlyFlow + investAmount + investmentProfit;
+
+
+        // 結果格納
+        result.data.push(currentTotal);
+        result.investmentData.push(currentInvestment);
         result.labels.push(currentMonthYM);
 
-        // 破産リスクのチェック
-        if (currentBalance < 0 && crashMonth === null) {
+        if (currentTotal < 0 && crashMonth === null) {
             crashMonth = currentMonthYM;
         }
 
-        // 次の月へ
         currentMonthDate = addMonth(currentMonthDate);
     }
 
-    return { ...result, crashMonth };
+    result.crashMonth = crashMonth;
+    result.breakdown = {
+        living: Math.round(totalLivingCost),
+        education: Math.round(totalEduCost),
+        loan: Math.round(totalLoanCost),
+        recurring: Math.round(totalRecurringCost),
+        investment: Math.round(totalInvestCost)
+    };
+
+    return result;
 };
 
 // ====================================================================
@@ -378,7 +706,7 @@ const renderScreen = () => {
             renderBalanceInput(contentDiv);
             break;
         case 'data-management':
-            renderDataManagement(contentDiv);
+            renderDataManagementTab(contentDiv); // Fix: Correct function name match
             break;
     }
 };
@@ -406,10 +734,54 @@ const renderDashboard = (container) => {
                     </p>
                 </div>
                 <div class="card p-3">
-                    <p class="text-sm text-gray-400">平均コア収支 (月)</p>
-                    <p class="text-2xl font-bold ${coreChange && coreChange < 0 ? 'text-red-400' : 'text-green-400'}">
-                        ${coreChange !== null ? formatCurrency(coreChange) : 'データ不足 (2ヶ月実績が必要)'}
-                    </p>
+                    <p class="text-sm text-gray-400">現在の月間収支 (推定)</p>
+                    ${(() => {
+            // 収支計算
+            let totalIncome = 0;
+            const s = appData.settings;
+            const familyIncomes = s.familyIncomes || {};
+
+            // 家族ごとの収入合算 (現役のみ簡易計算)
+            appData.families.forEach(f => {
+                const inc = familyIncomes[f.id];
+                if (inc) {
+                    // 今現在現役か？ (簡易: 年齢 < 退職年齢)
+                    const retireAge = inc.retirementAge || 60;
+                    if (f.age < retireAge) {
+                        totalIncome += inc.monthly;
+                        totalIncome += (inc.bonus / 12);
+                    } else {
+                        totalIncome += inc.pension;
+                    }
+                }
+            });
+
+            // 支出: 基本生活費 + ローン
+            let totalExpense = s.currentLivingCost || 250000;
+
+            // ローン (現在の年月で有効なもの)
+            const now = new Date();
+            const currentYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+            if (appData.loans) {
+                appData.loans.forEach(l => {
+                    if (currentYM >= l.startYM && currentYM <= l.endYM) {
+                        totalExpense += l.monthlyAmount;
+                    }
+                });
+            }
+
+            const surplus = totalIncome - totalExpense;
+            const colorClass = surplus >= 0 ? 'text-green-400' : 'text-red-400';
+
+            return `
+                        <p class="text-2xl font-bold ${colorClass}">
+                            ${formatCurrency(surplus)}
+                        </p>
+                        <p class="text-xs text-gray-500 mt-1">
+                           収入: ${formatCurrency(totalIncome)} - 支出: ${formatCurrency(totalExpense)}
+                        </p>
+                        `;
+        })()}
                 </div>
             </div>
     `;
@@ -463,13 +835,21 @@ const renderDashboard = (container) => {
     summaryHtml += `</div><h2 class="text-2xl font-bold mt-6 mb-3">総資産の長期予測 (${appData.settings.predictionYears}年)</h2>`;
     container.innerHTML += summaryHtml;
 
-    // グラフコンテナの追加
+    // グラフコンテナ + 内訳チャート
     container.innerHTML += `
-        <div class="card">
-            <div id="chart-container">
-                <canvas id="balanceChart"></canvas>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-2 card">
+                <div id="chart-container" style="height: 350px;">
+                    <canvas id="balanceChart"></canvas>
+                </div>
+            </div>
+            <div class="card">
+                <div id="breakdown-container" style="height: 350px;">
+                    <canvas id="breakdownChart"></canvas>
+                </div>
             </div>
         </div>
+        
         <h2 class="text-xl font-bold mt-6 mb-3">各口座の最新残高</h2>
         <div id="account-balances" class="card">
             ${renderAccountBalances(latestBalance)}
@@ -477,11 +857,28 @@ const renderDashboard = (container) => {
         <div class="h-24"></div>
     `;
 
+    // シミュレーション実行 (現在の設定)
+    // const simulationResult = runSimulation(); // 既に上部で計算済みなので再利用
+
+    // 保存済みシナリオの計算
+    const scenarioResults = [];
+    if (appData.scenarios) {
+        appData.scenarios.forEach(sc => {
+            const res = runSimulation(sc.settings, sc.families, sc.loans, sc.recurring);
+            scenarioResults.push({ name: sc.name, data: res.data });
+        });
+    }
+
+    // 結果統合
+    const finalData = { ...simulationResult, scenarios: scenarioResults };
+
     // Chart.jsの描画
     if (latestBalance) {
-        drawChart(simulationResult, latestBalance.total, latestBalance.month, simulationResult.crashMonth);
+        // 実績データを渡す
+        drawChart(finalData, balancesSorted, latestBalance.total, latestBalance.month, simulationResult.crashMonth);
+        renderBreakdownChart('breakdownChart', simulationResult.breakdown);
     } else {
-         document.getElementById('chart-container').innerHTML = '<p class="text-center text-gray-400 py-10">残高実績を登録するとグラフが表示されます。</p>';
+        document.getElementById('chart-container').innerHTML = '<p class="text-center text-gray-400 py-10">残高実績を登録するとグラフが表示されます。</p>';
     }
 
     // Lucideアイコンを再描画
@@ -501,7 +898,7 @@ const renderAccountBalances = (latestBalance) => {
     }
 
     if (appData.accounts.length === 0) {
-         return '<p class="text-gray-400">口座情報が登録されていません。</p>';
+        return '<p class="text-gray-400">口座情報が登録されていません。</p>';
     }
 
     let html = '<ul class="space-y-2">';
@@ -525,36 +922,155 @@ const renderAccountBalances = (latestBalance) => {
  * @param {string} startMonth - 最新の実績月
  * @param {string | null} crashMonth - 破産月
  */
-const drawChart = (data, startBalance, startMonth, crashMonth) => {
+/**
+ * Chart.jsを使用して予測グラフを描画する。
+ * @param {Object} data - シミュレーション結果データ (data.labels, data.data, data.investmentData, data.scenarios)
+ * @param {Array} historyData - 過去の実績データの配列 [{month, total, accounts}, ...]
+ * @param {number} startBalance - 最新の実績残高
+ * @param {string} startMonth - 最新の実績月
+ * @param {string | null} crashMonth - 破産月
+ */
+const drawChart = (data, historyData, startBalance, startMonth, crashMonth) => {
     if (simulationChart) {
         simulationChart.destroy();
     }
     const ctx = document.getElementById('balanceChart').getContext('2d');
 
-    // グラフ表示用のデータセットを準備
-    const chartLabels = data.labels;
-    const chartData = data.data;
+    // 1. ラベルの統合 (実績の過去分 + シミュレーションの未来分)
+    // historyData (過去 -> 現在) + data.labels (現在 -> 未来)
+    // 重複する「現在(最新月)」はそのまま重ねるか、ユニークにする
+    const historyLabels = historyData.map(d => d.month);
+    const simulationLabels = data.labels;
 
+    // Setを使って重複排除しつつ結合し、ソート
+    const allLabelsSet = new Set([...historyLabels, ...simulationLabels]);
+    const allLabels = Array.from(allLabelsSet).sort((a, b) => a.localeCompare(b));
+
+    // 2. データセットの作成
+    // ラベルに対応するデータを作成する（値がない場所は null）
+
+    // 実績データマップ
+    const historyMap = new Map();
+    historyData.forEach(d => historyMap.set(d.month, d.total));
+
+    // シミュレーションデータマップ (investmentData含む)
+    const simTotalMap = new Map();
+    const simInvestMap = new Map();
+    data.labels.forEach((label, idx) => {
+        simTotalMap.set(label, data.data[idx]);
+        simInvestMap.set(label, data.investmentData[idx]);
+    });
+
+    const historyPoints = [];
+    const simTotalPoints = [];
+    const simInvestPoints = [];
+
+    // 破産リスク表示用のインデックス特定用
     let crashIndex = -1;
-    if (crashMonth) {
-        crashIndex = chartLabels.findIndex(l => l === crashMonth);
+
+    allLabels.forEach((label, index) => {
+        // 実績: あれば値、なければnull
+        // ただし、線をつなぐために「シミュレーションの開始点(=最新実績)」も実績データとして扱うと綺麗につながる
+        // 既存の historyData には最新月が含まれているはずなので、そのままマップから取得でOK
+        if (historyMap.has(label)) {
+            historyPoints.push(historyMap.get(label));
+        } else {
+            historyPoints.push(null);
+        }
+
+        // 予測: あれば値、なければnull
+        if (simTotalMap.has(label)) {
+            simTotalPoints.push(simTotalMap.get(label));
+        } else {
+            simTotalPoints.push(null);
+        }
+
+        if (simInvestMap.has(label)) {
+            simInvestPoints.push(simInvestMap.get(label));
+        } else {
+            simInvestPoints.push(null);
+        }
+
+        if (label === crashMonth) {
+            crashIndex = index;
+        }
+    });
+
+    const datasets = [
+        // 1. 実績線 (濃い青、実線)
+        {
+            label: '実績残高',
+            data: historyPoints,
+            borderColor: '#2563eb', // Blue-600
+            backgroundColor: 'transparent',
+            borderWidth: 3,
+            pointRadius: historyData.length === 1 ? 4 : 0, // 点が1つだけなら丸を表示
+            pointHoverRadius: 5,
+            tension: 0.2,
+            fill: false,
+            order: 1 // 手前
+        },
+        // 2. シミュレーション予測 (薄い青、塗りつぶし)
+        {
+            label: '将来予測 (総資産)',
+            data: simTotalPoints,
+            borderColor: 'var(--accent-color)', // Light Blue
+            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+            borderWidth: 3,
+            borderDash: [2, 2], // 予測なので少し点線っぽくするか、色を変えるか。今回は実線のままスタイル維持
+            pointRadius: 0,
+            tension: 0.2,
+            fill: true,
+            order: 2
+        },
+        // 3. 運用資産内訳 (緑、点線)
+        {
+            label: 'うち運用資産',
+            data: simInvestPoints,
+            borderColor: '#10b981', // Green
+            borderWidth: 2,
+            borderDash: [4, 4], // 点線
+            pointRadius: 0,
+            tension: 0.2,
+            fill: false,
+            order: 0 // 最前面
+        }
+    ];
+
+    // シナリオデータの追加描画
+    if (data.scenarios && data.scenarios.length > 0) {
+        data.scenarios.forEach((sc, idx) => {
+            // シナリオデータのマッピング
+            const scMap = new Map();
+            // シナリオデータは simulationLabels と対応している
+            data.labels.forEach((l, i) => scMap.set(l, sc.data[i]));
+
+            const scPoints = allLabels.map(l => scMap.has(l) ? scMap.get(l) : null);
+
+            const colors = ['#f472b6', '#a78bfa', '#facc15']; // Pink, Purple, Yellow
+            datasets.push({
+                label: `Plan: ${sc.name}`,
+                data: scPoints,
+                borderColor: colors[idx % colors.length],
+                borderWidth: 2,
+                borderDash: [5, 5],
+                pointRadius: 0,
+                tension: 0.2,
+                fill: false,
+                order: 3
+            });
+        });
     }
 
-    const datasets = [{
-        label: '総資産予測 (JPY)',
-        data: chartData,
-        borderColor: 'var(--accent-color)',
-        borderWidth: 2,
-        pointRadius: 0, // ポイントを非表示
-        tension: 0.1,
-        fill: false
-    }];
-
     if (crashIndex !== -1) {
-        // 破産ポイントをハイライトするデータセットを追加
+        // 破産ポイント
+        // 全ラベル対応にするためマッピング
+        // 破産月以降のデータを抽出
+        const crashPoints = allLabels.map((l, i) => (i >= crashIndex && simTotalPoints[i] !== null) ? simTotalPoints[i] : NaN);
+
         datasets.push({
             label: '破産リスク',
-            data: chartData.map((d, i) => (i >= crashIndex ? d : NaN)),
+            data: crashPoints,
             borderColor: 'var(--alert-color)',
             borderWidth: 2,
             pointRadius: 3,
@@ -562,26 +1078,33 @@ const drawChart = (data, startBalance, startMonth, crashMonth) => {
             pointBorderColor: 'var(--alert-color)',
             tension: 0.1,
             fill: false,
-            showLine: true
+            showLine: true,
+            order: 0
         });
     }
 
     simulationChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: chartLabels,
+            labels: allLabels,
             datasets: datasets
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
             plugins: {
                 legend: {
-                    display: false,
+                    display: true,
+                    labels: { color: '#e5e7eb' }
                 },
                 tooltip: {
                     callbacks: {
-                        label: function(context) {
+                        label: function (context) {
+                            if (context.raw === null || context.raw === undefined || isNaN(context.raw)) return null;
                             return context.dataset.label + ': ' + formatCurrency(context.parsed.y);
                         }
                     },
@@ -594,14 +1117,59 @@ const drawChart = (data, startBalance, startMonth, crashMonth) => {
                     grid: { color: '#374151' },
                     ticks: {
                         color: 'var(--text-color)',
-                        maxTicksLimit: 12, // 年次表示
-                        callback: function(value, index, values) {
-                            // 3年に1回だけ表示
-                            const ym = chartLabels[index] ? chartLabels[index].split('-') : [];
-                            const year = ym.length > 0 ? ym[0] : '';
-                            
-                            if (index % 36 === 0) return year; // 3年に1回
-                            return '';
+                        autoSkip: false, // 自動間引きを無効化してcallbackで制御
+                        maxRotation: 0,
+                        callback: function (val, index) {
+                            const label = this.getLabelForValue(val);
+                            if (!label) return null;
+
+                            const [year, month] = label.split('-');
+                            const totalLabels = this.chart.data.labels.length;
+                            const mNum = Number(month);
+                            const yNum = Number(year);
+
+                            // 1. 最初のデータは常に表示
+                            if (index === 0) {
+                                // 期間が長い場合(2年以上)は月を省略して「年」のみにして被りを防ぐ
+                                if (totalLabels > 24) {
+                                    return `${year}年`;
+                                }
+                                return `${year}年${month}月`;
+                            }
+
+                            // 重なり防止: 最初のラベルから近すぎる定期ラベルは表示しない
+                            // 全体の15%未満の位置にあるラベルはスキップ
+                            if (index < totalLabels * 0.15) {
+                                return null;
+                            }
+
+                            // 2. 期間に応じた間引きロジック (スマホ想定でラベル数を5-7個程度に抑える)
+                            // totalLabels / 12 = 年数
+
+                            if (totalLabels <= 24) {
+                                // 2年以内: 6ヶ月ごと (約4個)
+                                if (mNum % 6 === 1) return `${year}年${month}月`;
+                                return null;
+                            } else if (totalLabels <= 60) {
+                                // 5年以内: 毎年 (約5個)
+                                if (month === '01') return `${year}年`;
+                                return null;
+                            } else if (totalLabels <= 120) {
+                                // 10年以内: 2年ごと (約5個)
+                                // 西暦偶数年を表示
+                                if (month === '01' && yNum % 2 === 0) return `${year}年`;
+                                return null;
+                            } else if (totalLabels <= 300) {
+                                // 25年以内: 5年ごと (約5個)
+                                if (month === '01' && yNum % 5 === 0) return `${year}年`;
+                                return null;
+                            } else {
+                                // それ以上(50年〜100年): 10年ごと (約5-10個)
+                                if (month === '01' && yNum % 10 === 0) return `${year}年`;
+                                return null;
+                            }
+
+                            return null;
                         }
                     }
                 },
@@ -610,8 +1178,7 @@ const drawChart = (data, startBalance, startMonth, crashMonth) => {
                     grid: { color: '#374151' },
                     ticks: {
                         color: 'var(--text-color)',
-                        callback: function(value) {
-                            // 億, 万表記
+                        callback: function (value) {
                             if (value >= 100000000) return (value / 100000000).toFixed(1) + '億';
                             if (value >= 10000) return (value / 10000).toFixed(0) + '万';
                             return formatCurrency(value);
@@ -681,6 +1248,7 @@ const setSettingsTab = (tab) => {
     document.getElementById('add-account-form')?.addEventListener('submit', handleAddAccount);
     document.getElementById('add-family-form')?.addEventListener('submit', handleAddFamily);
     document.getElementById('add-recurring-form')?.addEventListener('submit', handleAddRecurring);
+    document.getElementById('add-loan-form')?.addEventListener('submit', handleAddLoan);
     document.getElementById('add-future-event-form')?.addEventListener('submit', handleAddFutureEvent);
     document.getElementById('sim-config-form')?.addEventListener('submit', handleSimConfigUpdate);
 };
@@ -727,7 +1295,7 @@ const renderFamilyAccountTab = () => {
                         <select id="family-birth-month" required
                             class="w-full p-2 rounded-lg focus:ring-blue-500 focus:border-blue-500">
                             <option value="">誕生日月を選択</option>
-                            ${Array.from({length: 12}, (_, i) => i + 1).map(m => `<option value="${m}">${m}月</option>`).join('')}
+                            ${Array.from({ length: 12 }, (_, i) => i + 1).map(m => `<option value="${m}">${m}月</option>`).join('')}
                         </select>
                     </div>
                 </div>
@@ -751,12 +1319,43 @@ const renderFamilyAccountTab = () => {
 };
 
 const renderRecurringTab = () => {
-     // 今日のYYYY-MMをデフォルト値として取得
+    // 今日のYYYY-MMをデフォルト値として取得
     const todayYM = new Date().toISOString().slice(0, 7);
 
     let html = `
-        <div class="card mb-6">
-            <h3 class="text-xl font-bold mb-3 border-b border-gray-700 pb-2">定期支出登録</h3>
+        <!-- ローン・固定費セクション -->
+        <div class="card mb-6 border-l-4 border-red-500">
+            <h3 class="text-xl font-bold mb-3 border-b border-gray-700 pb-2">ローン・毎月の固定費 (期間限定)</h3>
+            <p class="text-sm text-gray-400 mb-3">住宅ローンや奨学金など、支払いに「終了」がある毎月の固定費を登録します。</p>
+            <form id="add-loan-form" class="space-y-3">
+                <input type="text" id="loan-name" placeholder="名称 (例: 住宅ローン)" required class="w-full p-2 rounded-lg">
+                <input type="number" id="loan-amount" placeholder="月々の支払額 (円)" min="1" required class="w-full p-2 rounded-lg">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs text-gray-400">開始年月</label>
+                        <input type="month" id="loan-start" value="${todayYM}" required class="w-full p-2 rounded-lg">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400">終了年月</label>
+                        <input type="month" id="loan-end" required class="w-full p-2 rounded-lg">
+                    </div>
+                </div>
+                <button type="submit" class="w-full py-2 bg-red-600 hover:bg-red-700 rounded-lg font-semibold">ローンを追加</button>
+            </form>
+            <ul class="mt-4 space-y-2 border-t border-gray-700 pt-4">
+                ${appData.loans && appData.loans.length > 0 ? appData.loans.map(loan => `
+                    <li class="flex justify-between items-center bg-gray-700 p-2 rounded-lg text-sm">
+                        <span>${loan.name}: ${formatCurrency(loan.monthlyAmount)}/月<br><span class="text-xs text-gray-400">${loan.startYM} 〜 ${loan.endYM}</span></span>
+                        <button onclick="deleteItem('loans', '${loan.id}')" class="text-red-400 hover:text-red-500 p-1"><i data-lucide="x" class="w-5 h-5"></i></button>
+                    </li>
+                `).join('') : '<li class="text-gray-500 text-sm">登録されたローンはありません</li>'}
+            </ul>
+        </div>
+
+        <!-- 定期的な特別出費セクション -->
+        <div class="card mb-6 border-l-4 border-yellow-500">
+            <h3 class="text-xl font-bold mb-3 border-b border-gray-700 pb-2">数年に一度の大型出費</h3>
+            <p class="text-sm text-gray-400 mb-3">車検、更新料、旅行など数年ごとに発生する出費を登録します。</p>
             <form id="add-recurring-form" class="space-y-3">
                 <label for="recurring-name" class="block text-sm font-medium mb-1 text-gray-300">支出名前</label>
                 <input type="text" id="recurring-name" placeholder="例: 年払い保険" required
@@ -781,22 +1380,39 @@ const renderRecurringTab = () => {
                             class="w-full p-2 rounded-lg">
                     </div>
                 </div>
-                <button type="submit" class="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold">定期支出を追加</button>
+                <div>
+                   <label class="block text-sm font-medium mb-1 text-gray-300">カテゴリ</label>
+                   <select id="recurring-category" class="w-full p-2 rounded-lg">
+                       <option value="other">その他</option>
+                       <option value="vehicle">車両関連 (免許返納で停止)</option>
+                       <option value="housing">住宅関連</option>
+                       <option value="insurance">保険</option>
+                       <option value="education">教育関連</option>
+                   </select>
+                </div>
+                <button type="submit" class="w-full py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg font-semibold">定期支出を追加</button>
             </form>
             <ul class="mt-4 space-y-2 border-t border-gray-700 pt-4">
                 <p class="text-sm text-gray-400 mb-2">${appData.recurringExpenses.length}件の定期支出</p>
-                ${appData.recurringExpenses.map(exp => `
+                ${appData.recurringExpenses.map(exp => {
+        const catLabel = { vehicle: '車両', housing: '住宅', insurance: '保険', education: '教育', other: 'その他' }[exp.category] || 'その他';
+        return `
                     <li class="flex justify-between items-center bg-gray-700 p-2 rounded-lg">
-                        <span>${exp.name}: ${formatCurrency(exp.amount)} (${exp.intervalYears}年ごと・開始${exp.startYM})</span>
+                        <span><span class="text-xs bg-gray-600 px-1 rounded mr-1">${catLabel}</span>${exp.name}: ${formatCurrency(exp.amount)} (${exp.intervalYears}年ごと・開始${exp.startYM})</span>
                         <button onclick="deleteItem('recurringExpenses', '${exp.id}')" class="text-red-400 hover:text-red-500 p-1">
                             <i data-lucide="x" class="w-5 h-5"></i>
                         </button>
                     </li>
-                `).join('')}
+                    `;
+    }).join('')}
             </ul>
         </div>
         <div class="h-24"></div>
     `;
+
+    // イベントリスナー登録はここでやらないとDOM更新後に消えるため、setSettingsTabで呼ぶ形にするか、ここでインライン的に書くなら後段の処理が必要
+    // script.jsの構造上、setSettingsTabでリスナー付与しているはずなので、IDが一致していればOK
+    // ただし add-loan-form は新規追加なので setSettingsTab に定義を追加する必要あり
     return html;
 };
 
@@ -840,7 +1456,7 @@ const renderFutureEventTab = () => {
                         <select id="event-target-month" required
                             class="w-full p-2 rounded-lg">
                             <option value="">発生月を選択</option>
-                            ${Array.from({length: 12}, (_, i) => i + 1).map(m => `<option value="${m}">${m}月</option>`).join('')}
+                            ${Array.from({ length: 12 }, (_, i) => i + 1).map(m => `<option value="${m}">${m}月</option>`).join('')}
                         </select>
                     </div>
                 </div>
@@ -849,12 +1465,12 @@ const renderFutureEventTab = () => {
             <ul class="mt-4 space-y-2 border-t border-gray-700 pt-4">
                 <p class="text-sm text-gray-400 mb-2">${appData.futureEvents.length}件の将来イベント</p>
                 ${appData.futureEvents.map(event => {
-                    const famName = appData.families.find(f => f.id === event.familyId)?.name || '不明';
-                    const now = new Date();
-                    const currentYear = now.getFullYear();
-                    const family = appData.families.find(f => f.id === event.familyId);
-                    const eventYear = family ? (currentYear - family.age) + event.targetAge : 'N/A';
-                    return `
+        const famName = appData.families.find(f => f.id === event.familyId)?.name || '不明';
+        const now = new Date();
+        const currentYear = now.getFullYear();
+        const family = appData.families.find(f => f.id === event.familyId);
+        const eventYear = family ? (currentYear - family.age) + event.targetAge : 'N/A';
+        return `
                         <li class="flex justify-between items-center bg-gray-700 p-2 rounded-lg text-sm">
                             <span>
                                 ${event.name} (${formatCurrency(event.amount)})<br>
@@ -865,7 +1481,7 @@ const renderFutureEventTab = () => {
                             </button>
                         </li>
                     `;
-                }).join('')}
+    }).join('')}
             </ul>
         </div>
         <div class="h-24"></div>
@@ -874,19 +1490,173 @@ const renderFutureEventTab = () => {
 };
 
 const renderSimConfigTab = () => {
-     let html = `
-        <div class="card">
-            <h3 class="text-xl font-bold mb-3 border-b border-gray-700 pb-2">シミュレーション設定</h3>
-            <form id="sim-config-form" class="space-y-4">
-                <label for="prediction-years" class="block text-sm font-medium text-gray-300">予測期間 (年)</label>
-                <input type="number" id="prediction-years" name="predictionYears" placeholder="最大30年" min="1" max="30" value="${appData.settings.predictionYears}" required
-                    class="w-full p-2 rounded-lg">
-                <button type="submit" class="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold">設定を更新</button>
-            </form>
-        </div>
-        <div class="h-24"></div>
-    `;
+    const s = appData.settings;
+    let html = `
+       <div class="card space-y-6">
+           <h3 class="text-xl font-bold mb-3 border-b border-gray-700 pb-2">シミュレーション詳細設定</h3>
+           <form id="sim-config-form" class="space-y-6">
+
+               <!-- 1. 家族の収入・退職プラン -->
+               <div class="space-y-3">
+                   <h4 class="font-bold text-gray-200 border-l-4 border-purple-500 pl-2">1. 家族の収入・退職プラン</h4>
+                   <p class="text-xs text-gray-400">18歳以上の家族について、収入と退職プランを設定します。</p>
+                   <div class="space-y-4" id="family-income-config-area">
+                       ${appData.families.filter(f => f.age >= 18).map(f => {
+        const inc = (s.familyIncomes && s.familyIncomes[f.id]) || { monthly: 0, bonus: 0, retirementYM: '', severance: 0, pension: 0 };
+        return `
+                           <div class="bg-gray-700 p-4 rounded-lg border border-gray-600" data-family-id="${f.id}">
+                               <div class="font-bold text-lg mb-2 text-purple-300 w-full border-b border-gray-600 pb-1 mb-3">${f.name} (${f.age}歳)</div>
+                               <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                   <!-- 現役収入 -->
+                                   <div>
+                                       <label class="block text-xs text-gray-400">手取り月収 (円)</label>
+                                       <input type="number" class="w-full p-2 rounded bg-gray-800 border border-gray-600 mt-1 f-income" value="${inc.monthly || 0}" step="10000">
+                                   </div>
+                                   <div>
+                                       <label class="block text-xs text-gray-400">年間ボーナス (円)</label>
+                                       <input type="number" class="w-full p-2 rounded bg-gray-800 border border-gray-600 mt-1 f-bonus" value="${inc.bonus || 0}" step="10000">
+                                   </div>
+
+                                   <!-- 退職設定 -->
+                                   <div class="md:col-span-2 lg:col-span-1 border-t border-gray-600 pt-2 lg:border-t-0 lg:pt-0">
+                                        <label class="block text-xs text-gray-400 text-yellow-200">退職年齢 (歳)</label>
+                                        <input type="number" class="w-full p-2 rounded bg-gray-800 border border-gray-600 mt-1 f-retire-age" value="${inc.retirementAge || 60}" min="18" max="100">
+                                   </div>
+                                   <div class="md:col-span-1 border-t border-gray-600 pt-2 lg:border-t-0 lg:pt-0">
+                                        <label class="block text-xs text-gray-400 text-yellow-200">退職金 (一時金)</label>
+                                        <input type="number" class="w-full p-2 rounded bg-gray-800 border border-gray-600 mt-1 f-severance" value="${inc.severance || 0}" step="100000">
+                                   </div>
+                                   <div class="md:col-span-1 border-t border-gray-600 pt-2 lg:border-t-0 lg:pt-0">
+                                        <label class="block text-xs text-gray-400 text-green-300">退職後の年金 (月額)</label>
+                                        <input type="number" class="w-full p-2 rounded bg-gray-800 border border-gray-600 mt-1 f-pension" value="${inc.pension || 0}" step="10000">
+                                   </div>
+                               </div>
+                           </div>
+                           `;
+    }).join('')}
+                       ${appData.families.filter(f => f.age >= 18).length === 0 ? '<p class="text-sm text-red-400">18歳以上の家族が登録されていません。「設定・登録」→「家族・口座」から家族を登録してください。</p>' : ''}
+                   </div>
+               </div>
+               
+               <!-- 2. 期間・経済設定 -->
+               <div class="space-y-3">
+                   <h4 class="font-bold text-gray-200 border-l-4 border-blue-500 pl-2">2. 期間・経済設定</h4>
+                   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                       <div class="md:col-span-2">
+                           <label class="block text-sm font-medium text-gray-300">現在の月間生活費 (基本支出)</label>
+                           <input type="number" id="conf-living" value="${s.currentLivingCost || 250000}" step="10000" class="w-full p-2 rounded-lg mt-1">
+                           <p class="text-xs text-gray-400 mt-1">※住宅ローン、教育費、大型出費を<b>除いた</b>、日々の生活費を入力してください。</p>
+                       </div>
+                       <div>
+                           <label class="block text-sm font-medium text-gray-300">予測期間 (年)</label>
+                           <input type="number" id="conf-years" value="${s.predictionYears}" min="1" max="50" class="w-full p-2 rounded-lg mt-1">
+                       </div>
+                       <div>
+                           <label class="block text-sm font-medium text-gray-300">想定インフレ率 (年%)</label>
+                           <input type="number" id="conf-inflation" value="${s.inflationRate}" step="0.1" class="w-full p-2 rounded-lg mt-1">
+                       </div>
+                   </div>
+               </div>
+
+               <!-- 3. 資産運用 -->
+               <div class="space-y-3">
+                   <h4 class="font-bold text-gray-200 border-l-4 border-green-500 pl-2">3. 資産運用 (NISA等)</h4>
+                   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                       <div>
+                            <label class="block text-sm font-medium text-gray-300">毎月の積立額 (円)</label>
+                            <div class="flex gap-2">
+                                <input type="number" id="conf-invest-monthly" value="${s.investmentMonthly}" step="1000" class="w-full p-2 rounded-lg mt-1">
+                                <button type="button" onclick="suggestInvestment()" class="whitespace-nowrap bg-teal-600 hover:bg-teal-700 text-xs px-3 rounded mt-1">推奨額を計算</button>
+                            </div>
+                       </div>
+                       <div>
+                           <label class="block text-sm font-medium text-gray-300">想定利回り (年%)</label>
+                           <input type="number" id="conf-invest-yield" value="${s.investmentYield}" step="0.1" class="w-full p-2 rounded-lg mt-1">
+                       </div>
+                   </div>
+               </div>
+
+               <!-- 4. ライフプラン補正 -->
+               <div class="space-y-3">
+                   <h4 class="font-bold text-gray-200 border-l-4 border-orange-500 pl-2">4. ライフプラン補正</h4>
+                   
+                   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                       <div>
+                           <label class="block text-sm font-medium text-gray-300">教育費プラン</label>
+                           <select id="conf-edu-mode" class="w-full p-2 rounded-lg mt-1">
+                               <option value="public" ${s.educationMode === 'public' ? 'selected' : ''}>オール公立 (標準)</option>
+                               <option value="public_private_univ" ${s.educationMode === 'public_private_univ' ? 'selected' : ''}>高校まで公立・大学私立</option>
+                               <option value="private" ${s.educationMode === 'private' ? 'selected' : ''}>オール私立 (高コスト)</option>
+                           </select>
+                       </div>
+                       <div>
+                           <label class="block text-sm font-medium text-gray-300">免許返納年齢 (車両費停止)</label>
+                           <input type="number" id="conf-license-age" value="${s.licenseReturnAge}" class="w-full p-2 rounded-lg mt-1">
+                       </div>
+                   </div>
+
+                   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                       <div>
+                            <label class="block text-sm font-medium text-gray-300">大学進学時の居住形態</label>
+                            <select id="conf-univ-housing" class="w-full p-2 rounded-lg mt-1" onchange="toggleUnivAllowance(this.value)">
+                                <option value="home" ${s.univHousingType === 'home' ? 'selected' : ''}>自宅通学</option>
+                                <option value="away" ${s.univHousingType === 'away' ? 'selected' : ''}>自宅外（下宿・一人暮らし）</option>
+                            </select>
+                       </div>
+                       <div id="univ-allowance-area" class="${s.univHousingType === 'home' ? 'hidden' : ''}">
+                           <label class="block text-sm font-medium text-gray-300">毎月の仕送り額（家賃込）</label>
+                           <input type="number" id="conf-univ-allowance" value="${s.univAllowance || 100000}" step="10000" class="w-full p-2 rounded-lg mt-1">
+                       </div>
+                   </div>
+
+                   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                       <div>
+                           <label class="block text-sm font-medium text-gray-300">子供の自立年齢</label>
+                           <input type="number" id="conf-child-age" value="${s.childIndependenceAge}" class="w-full p-2 rounded-lg mt-1">
+                       </div>
+                       <div>
+                           <label class="block text-sm font-medium text-gray-300">自立後の生活費削減率 (%)</label>
+                           <input type="number" id="conf-reduction" value="${s.costReductionRate}" class="w-full p-2 rounded-lg mt-1">
+                           <p class="text-xs text-gray-400 mt-1">※全ての子供が自立した後の基本生活費削減率</p>
+                       </div>
+                   </div>
+               </div>
+
+               <!-- 5. シナリオ比較 -->
+               <div class="space-y-3">
+                   <h4 class="font-bold text-gray-200 border-l-4 border-pink-500 pl-2">5. シナリオ比較</h4>
+                   <p class="text-xs text-gray-400">現在の設定を「比較用シナリオ」として保存します。設定を変更してグラフで比較できます。</p>
+                   <div class="flex gap-2">
+                       <input type="text" id="scenario-name" placeholder="シナリオ名 (例: 私立プラン)" class="flex-1 p-2 rounded-lg bg-gray-800 border border-gray-600">
+                       <button type="button" onclick="handleAddScenario()" class="bg-pink-600 hover:bg-pink-700 text-white px-4 rounded-lg font-bold">保存</button>
+                   </div>
+                   <div id="scenario-list" class="space-y-2 mt-2">
+                       ${appData.scenarios && appData.scenarios.length > 0 ? appData.scenarios.map(sc => `
+                           <div class="flex justify-between items-center bg-gray-700 p-2 rounded border border-gray-600">
+                               <span class="text-sm font-bold text-pink-300">Run: ${sc.name}</span>
+                               <button type="button" onclick="deleteItem('scenarios', '${sc.id}')" class="text-red-400 hover:text-red-500"><i data-lucide="x" class="w-4 h-4"></i></button>
+                           </div>
+                       `).join('') : '<p class="text-xs text-gray-500">保存されたシナリオはありません</p>'}
+                   </div>
+               </div>
+
+               <button type="submit" class="w-full py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-bold transition duration-150">設定を保存して再計算</button>
+           </form>
+       </div>
+`;
     return html;
+};
+
+// ヘルパー関数: 仕送り入力欄の表示切り替え
+window.toggleUnivAllowance = (value) => {
+    const area = document.getElementById('univ-allowance-area');
+    if (area) {
+        if (value === 'away') {
+            area.classList.remove('hidden');
+        } else {
+            area.classList.add('hidden');
+        }
+    }
 };
 
 // --- 残高入力画面のレンダリング ---
@@ -898,7 +1668,7 @@ const renderBalanceInput = (container) => {
     const getBalanceDataForMonth = (month) => {
         return appData.monthlyBalances.find(item => item.month === month);
     };
-    
+
     // 初期表示時に使用するデータ（最新の実績月 or 今月）
     const initialBalanceData = getBalanceDataForMonth(defaultMonth);
     let initialTotal = initialBalanceData ? initialBalanceData.total : 0; // 既存データがあればその合計値、なければ 0
@@ -915,7 +1685,7 @@ const renderBalanceInput = (container) => {
                 <input type="number" id="balance-${acc.id}" data-id="${acc.id}" placeholder="金額を入力" value="${initialValue}" required
                     class="w-full p-2 rounded-lg balance-input">
             </div>
-        `;
+    `;
     }).join('');
 
     let historyList = appData.monthlyBalances.sort((a, b) => b.month.localeCompare(a.month)).map(item => `
@@ -925,11 +1695,11 @@ const renderBalanceInput = (container) => {
             <button onclick="deleteItem('monthlyBalances', '${item.month}', true)" class="text-red-400 hover:text-red-500 p-1">
                 <i data-lucide="trash-2" class="w-5 h-5"></i>
             </button>
-        </li>
+        </li >
     `).join('');
 
     container.innerHTML = `
-        <h2 class="text-2xl font-bold mb-4">月次総残高入力</h2>
+    <h2 class="text-2xl font-bold mb-4"> 月次総残高入力</h2 >
         <p class="mb-4 text-gray-400">最新の実績残高を記録することで、予測の精度が向上します。</p>
 
         <div class="card mb-6">
@@ -961,8 +1731,8 @@ const renderBalanceInput = (container) => {
             ${historyList.length > 0 ? historyList : '<li class="text-gray-400 text-center py-4">履歴がありません。</li>'}
         </ul>
         <div class="h-24"></div>
-    `;
-     // イベントリスナーの登録
+`;
+    // イベントリスナーの登録
     if (appData.accounts.length > 0) {
         document.getElementById('balance-input-form')?.addEventListener('submit', handleBalanceInput);
         document.querySelectorAll('.balance-input').forEach(input => {
@@ -970,35 +1740,35 @@ const renderBalanceInput = (container) => {
             input.addEventListener('input', updateBalanceTotal);
             // 初期表示で空文字の場合に'0'に設定する処理を、updateBalanceTotal側で対応
         });
-        
+
         // ★改修箇所②: 月選択時の口座残高の反映ロジックを追加
         document.getElementById('balance-month')?.addEventListener('change', (e) => {
             const selectedMonth = e.target.value;
             const existingData = appData.monthlyBalances.find(item => item.month === selectedMonth);
-            
+
             let newTotal = 0;
-            
+
             document.querySelectorAll('.balance-input').forEach(input => {
                 const accountId = input.dataset.id;
                 let balance = 0;
-                
+
                 if (existingData) {
                     // 既存データがあればその値を設定
                     balance = existingData.accounts[accountId] || 0;
                 }
-                
+
                 input.value = balance;
                 newTotal += balance;
             });
-            
+
             // 合計残高を更新
             updateBalanceTotal(); // 初期値渡しをやめて、DOMから再計算させる
         });
-        
+
         // ★修正箇所③: 描画後に一度合計を計算し直して、DOMに反映する (特に初期値が0でない場合)
         updateBalanceTotal();
     }
-     
+
     // Lucideアイコンを再描画
     if (typeof lucide !== 'undefined' && lucide.createIcons) {
         lucide.createIcons();
@@ -1011,35 +1781,33 @@ const renderBalanceInput = (container) => {
  */
 const updateBalanceTotal = (initialTotal = null) => {
     let total = 0;
-    
+    const accountBalances = {}; // Fix: Define accountBalances object locally
+
     // initialTotalが渡された場合の処理は削除し、常にDOMから計算するようにする
     // if (initialTotal !== null) {
     //     total = initialTotal;
     // } else {
-    
+
     document.querySelectorAll('.balance-input').forEach(input => {
-        // ★修正点: input.valueが空文字の場合は Number('') は 0 になるが、
-        // 入力が非数でないことを確認するために Number(input.value) || 0 を使用。
-        // input[type=number]では空文字が許可されますが、Number(空文字)は0です。
-        // ただし、もし `required` がない場合に非数値が入る可能性も考慮し、
-        // Number(input.value) で NaN になる可能性を排除するために、
-        // より安全な方法として Number.parseFloat と isNaN を使うこともできますが、
-        // 既存のコードを尊重しつつ、空文字で NaN にならないことを確認します。
-        
-        // input.value が空文字 ('') の場合、Number(input.value) は 0 になり、total は 0 が加算されます。
-        // input.value が "123" の場合、Number(input.value) は 123 になります。
-        // ここで問題だったのは、`updateBalanceTotal(initialTotal)` の引数渡しと、
-        // `formatCurrency` の中での `formatCurrency(initialTotal)` が NaN になってしまうことでした。
-        // 修正後のコードでは、描画直後の初期値の合計は `renderBalanceInput` で DOM に設定され、
-        // その後 `updateBalanceTotal()` が呼び出されて、DOMから値を取得して再計算されます。
-        
-        // Number(input.value) は空文字の場合 0 になります。NaNになるのは "abc" などの場合です。
-        const amount = Number(input.value) || 0;
+        // input.value が空文字または不正な文字列の場合、Number() は NaN を返す可能性がある
+        // required属性があるため空文字は送信されないはずだが、NaN対策を強化
+        const amount = Number(input.value);
+
+        // ユーザーが入力しない場合 (空文字) は Number('') = 0 なので OK
+        // ユーザーが数値以外を入力した場合 (例: "abc") は Number("abc") = NaN
+        // NaN のチェックを追加
+        if (isNaN(amount)) {
+            allInputsValid = false;
+            return;
+        }
+
+        const accountId = input.dataset.id;
+        accountBalances[accountId] = amount;
         total += amount;
     });
     // } // initialTotal のブロックは削除
 
-    
+
     const totalSpan = document.getElementById('current-total-balance');
     if (totalSpan) {
         // totalがNaNにならないことを前提に、formatCurrencyを呼び出す
@@ -1049,10 +1817,12 @@ const updateBalanceTotal = (initialTotal = null) => {
     }
 };
 
+
+
 // --- データ管理画面のレンダリング ---
-const renderDataManagement = (container) => {
+const renderDataManagementTab = (container) => {
     container.innerHTML = `
-        <h2 class="text-2xl font-bold mb-4">データ管理</h2>
+    <h2 class="text-2xl font-bold mb-4"> データ管理</h2 >
         <p class="mb-6 text-gray-400">データのバックアップ、復元、全削除を行います。</p>
 
         <div class="card mb-6 space-y-4">
@@ -1082,7 +1852,7 @@ const renderDataManagement = (container) => {
         </div>
 
         <div class="h-24"></div>
-    `;
+`;
     // Lucideアイコンを再描画
     if (typeof lucide !== 'undefined' && lucide.createIcons) {
         lucide.createIcons();
@@ -1133,14 +1903,33 @@ const handleAddRecurring = (e) => {
     const amount = parseInt(document.getElementById('recurring-amount').value);
     const intervalYears = parseInt(document.getElementById('recurring-interval').value);
     const startYM = document.getElementById('recurring-start-ym').value;
+    const category = document.getElementById('recurring-category').value; // 新規追加
 
     if (name && !isNaN(amount) && !isNaN(intervalYears) && startYM) {
-        appData.recurringExpenses.push({ id: generateId(), name, amount, intervalYears, startYM });
+        appData.recurringExpenses.push({ id: generateId(), name, amount, intervalYears, startYM, category });
         saveData();
         setSettingsTab('recurring');
         showMessage("登録完了", `${name} の定期支出が追加されました。`);
     } else {
         showMessage("入力エラー", "全ての項目を正しく入力してください。");
+    }
+};
+
+const handleAddLoan = (e) => {
+    e.preventDefault();
+    const name = document.getElementById('loan-name').value.trim();
+    const amount = parseInt(document.getElementById('loan-amount').value);
+    const startYM = document.getElementById('loan-start').value;
+    const endYM = document.getElementById('loan-end').value;
+
+    if (name && !isNaN(amount) && startYM && endYM) {
+        if (!appData.loans) appData.loans = [];
+        appData.loans.push({ id: generateId(), name, monthlyAmount: amount, startYM, endYM });
+        saveData();
+        setSettingsTab('recurring');
+        showMessage("登録完了", `${name} が追加されました。`);
+    } else {
+        showMessage("エラー", "すべての項目を入力してください。");
     }
 };
 
@@ -1168,14 +1957,62 @@ const handleAddFutureEvent = (e) => {
  */
 const handleSimConfigUpdate = (e) => {
     e.preventDefault();
-    const years = parseInt(document.getElementById('prediction-years').value);
-    if (!isNaN(years) && years > 0 && years <= MAX_PREDICTION_MONTHS / 12) {
-        appData.settings.predictionYears = years;
+
+    // 値の取得と型変換
+    const years = parseInt(document.getElementById('conf-years').value) || 30;
+    // 古いIncome/Bonus入力は廃止。
+    const living = parseInt(document.getElementById('conf-living').value) || 250000;
+    const inflation = parseFloat(document.getElementById('conf-inflation').value) || 0;
+    const salaryIncAmount = parseInt(document.getElementById('conf-salary-increase-amount').value) || 0;
+    const investMonthly = parseInt(document.getElementById('conf-invest-monthly').value) || 0;
+    const investYield = parseFloat(document.getElementById('conf-invest-yield').value) || 0;
+    const eduMode = document.getElementById('conf-edu-mode').value;
+    const licenseAge = parseInt(document.getElementById('conf-license-age').value) || 75;
+    const childIndepAge = parseInt(document.getElementById('conf-child-age').value) || 23;
+    const costRed = parseFloat(document.getElementById('conf-reduction').value) || 0;
+    const univHousing = document.getElementById('conf-univ-housing').value;
+    const univAllow = parseInt(document.getElementById('conf-univ-allowance').value) || 0;
+
+    // 家族別収入設定の取得
+    const familyIncomes = {};
+    const familyDivs = document.querySelectorAll('#sim-config-form [data-family-id]');
+    familyDivs.forEach(div => {
+        const id = div.getAttribute('data-family-id');
+        familyIncomes[id] = {
+            monthly: parseInt(div.querySelector('.f-income').value) || 0,
+            bonus: parseInt(div.querySelector('.f-bonus').value) || 0,
+            retirementAge: parseInt(div.querySelector('.f-retire-age').value) || 60,
+            severance: parseInt(div.querySelector('.f-severance').value) || 0,
+            pension: parseInt(div.querySelector('.f-pension').value) || 0,
+        };
+    });
+
+    // バリデーション
+    if (years > 0 && years <= 50) {
+        appData.settings = {
+            ...appData.settings,
+            predictionYears: years,
+            familyIncomes: familyIncomes, // 保存
+            currentLivingCost: living,
+            inflationRate: inflation,
+            salaryIncreaseAmount: salaryIncAmount,
+            investmentMonthly: investMonthly,
+            investmentYield: investYield,
+            educationMode: eduMode,
+            childIndependenceAge: childIndepAge,
+            costReductionRate: costRed,
+            licenseReturnAge: licenseAge,
+            univHousingType: univHousing,
+            univAllowance: univAllow
+        };
         saveData();
+        // 描画更新: フォームの値がリセットされないように、本当は再取得して描画すべきだが
+        // ここでは単純に保存メッセージを出して、シミュレーション結果（Dashboard）を見るように促すほうがいい
+        // しかし仕様上 setSettingsTab を呼んでいる
         setSettingsTab('sim-config');
-        showMessage("設定更新", `予測期間が${years}年に更新されました。`);
+        showMessage("設定更新", `シミュレーション設定を更新しました。\n家族ごとの収入プランが反映されます。`);
     } else {
-         showMessage("入力エラー", `予測期間は1〜${MAX_PREDICTION_MONTHS / 12}年の間で入力してください。`);
+        showMessage("入力エラー", `予測期間は1〜50年の間で入力してください。`);
     }
 };
 
@@ -1197,8 +2034,8 @@ const handleBalanceInput = (e) => {
     document.querySelectorAll('.balance-input').forEach(input => {
         // input.value が空文字または不正な文字列の場合、Number() は NaN を返す可能性がある
         // required属性があるため空文字は送信されないはずだが、NaN対策を強化
-        const amount = Number(input.value); 
-        
+        const amount = Number(input.value);
+
         // ユーザーが入力しない場合 (空文字) は Number('') = 0 なので OK
         // ユーザーが数値以外を入力した場合 (例: "abc") は Number("abc") = NaN
         // NaN のチェックを追加
@@ -1206,7 +2043,7 @@ const handleBalanceInput = (e) => {
             allInputsValid = false;
             return;
         }
-        
+
         const accountId = input.dataset.id;
         accountBalances[accountId] = amount;
         total += amount;
@@ -1294,8 +2131,8 @@ const handleImportData = () => {
             const importedData = JSON.parse(event.target.result);
             // 必須キーの簡易チェック
             if (importedData.accounts && importedData.families) {
-                 const confirmed = await showMessage("インポートの確認", "現在のデータは上書きされます。よろしいですか？", true);
-                 if (!confirmed) return;
+                const confirmed = await showMessage("インポートの確認", "現在のデータは上書きされます。よろしいですか？", true);
+                if (!confirmed) return;
 
                 appData = { ...appData, ...importedData };
                 saveData();
@@ -1331,6 +2168,145 @@ const handleClearData = async () => {
 // ====================================================================
 // VII. アプリケーションの初期化
 // ====================================================================
+
+/**
+ * 投資額の推奨値を計算して入力欄にセットする
+ */
+const suggestInvestment = () => {
+    // 安全な投資額を計算
+    // 簡易ロジック: (世帯月収 - 現在の生活費 - ローン等) * 0.5 ぐらいを提案
+    let totalMonthlyIncome = 0;
+
+    // 既存の入力値（画面上）から計算
+    // Family Incomes
+    const familyDivs = document.querySelectorAll('#sim-config-form [data-family-id]');
+    familyDivs.forEach(div => {
+        const m = parseInt(div.querySelector('.f-income').value) || 0;
+        const b = parseInt(div.querySelector('.f-bonus').value) || 0;
+        totalMonthlyIncome += m + (b / 12); // ボーナスも月割で加算
+    });
+
+    // Living Cost
+    const living = parseInt(document.getElementById('conf-living').value) || 250000;
+
+    // Current Loans (Registered)
+    let loanTotal = 0;
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+    const currentYM = `${currentYear} -${String(currentMonth).padStart(2, '0')} `;
+
+    if (appData.loans) {
+        appData.loans.forEach(l => {
+            if (currentYM >= l.startYM && currentYM <= l.endYM) {
+                loanTotal += l.monthlyAmount;
+            }
+        });
+    }
+
+    const surplus = totalMonthlyIncome - living - loanTotal;
+    // 余剰金の50%を提案 (マイナスなら0)
+    const suggestion = Math.max(0, Math.floor((surplus * 0.5) / 1000) * 1000);
+
+    document.getElementById('conf-invest-monthly').value = suggestion;
+    showMessage("AI提案", `現在の月間収支(余剰: 約${formatCurrency(surplus)}) から、\n無理のない積立額として ${formatCurrency(suggestion)} を提案しました。`);
+};
+
+/**
+ * シナリオを追加する
+ */
+const handleAddScenario = () => {
+    const nameInput = document.getElementById('scenario-name');
+    const name = nameInput.value.trim();
+    if (!name) {
+        showMessage("エラー", "シナリオ名を入力してください。");
+        return;
+    }
+
+    // 現在の状態をDeep Copyして保存
+    const snapshot = {
+        id: generateId(),
+        name: name,
+        settings: JSON.parse(JSON.stringify(appData.settings)),
+        families: JSON.parse(JSON.stringify(appData.families)),
+        loans: JSON.parse(JSON.stringify(appData.loans || [])),
+        recurring: JSON.parse(JSON.stringify(appData.recurringExpenses || []))
+    };
+
+    if (!appData.scenarios) appData.scenarios = [];
+    appData.scenarios.push(snapshot);
+    saveData();
+    renderSimConfigTab(); // リスト更新
+    showMessage("保存", `シナリオ「${name}」を保存しました。\nダッシュボードのグラフで比較できます。`);
+};
+
+/**
+ * 生涯支出内訳円グラフを描画
+ */
+const renderBreakdownChart = (containerId, breakdown) => {
+    if (!breakdown) return;
+
+    const data = [
+        breakdown.living,
+        breakdown.education,
+        breakdown.loan,
+        breakdown.recurring,
+        breakdown.investment
+    ];
+
+    // Chart描画
+    const ctx = document.getElementById(containerId).getContext('2d');
+
+    // 既存チャートがあれば破棄 (ID管理が難しいのでcanvas再生成アプローチ推奨だが、ここでは簡易的に)
+    // ※ Chart.jsのインスタンス管理をしていないため、再描画ごとに重ねがきされる可能性がある。
+    // 親コンテナの中身をクリアしてcanvasを再作成する。
+    const container = document.getElementById(containerId).parentElement;
+    container.innerHTML = `<canvas id="${containerId}"></canvas>`;
+    const newCtx = document.getElementById(containerId).getContext('2d');
+
+    const total = data.reduce((a, b) => a + b, 0);
+
+    new Chart(newCtx, {
+        type: 'doughnut',
+        data: {
+            labels: ['基本生活費', '教育費', '住宅・ローン', 'その他定期支出', '資産運用(積立)'],
+            datasets: [{
+                data: data,
+                backgroundColor: [
+                    '#ef4444', // Living (Red)
+                    '#f59e0b', // Education (Orange)
+                    '#3b82f6', // Loan (Blue)
+                    '#10b981', // Recurring (Green)
+                    '#8b5cf6'  // Invest (Purple)
+                ],
+                borderColor: '#1f2937',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'right', labels: { color: '#d1d5db', font: { size: 10 } } },
+                title: {
+                    display: true,
+                    text: `将来の総支出内訳(総額: ${formatCurrency(total)})`,
+                    color: '#fff',
+                    font: { size: 14 }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function (context) {
+                            const val = context.parsed;
+                            const percentage = Math.round((val / total) * 100);
+                            return `${context.label}: ${formatCurrency(val)} (${percentage}%)`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+};
 
 /**
  * アプリケーションの初期化処理
