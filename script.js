@@ -15,7 +15,7 @@ let appData = {
     settings: {
         predictionYears: 30, // 予測期間（年）
         // monthlyIncome / yearlyBonus は廃止し、familyIncomesに移行
-        familyIncomes: {}, // { familyId: { monthly: number, bonus: number, retirementYM: string, severance: number, pension: number } }
+        familyIncomes: {}, // { familyId: { monthly: number, bonus: number, salaryIncrease: number, retirementYM: string, severance: number, pension: number } }
         currentLivingCost: 250000, // 現在の生活費 (円/月) - インフレ計算の基準
         inflationRate: 1.0, // インフレ率（年%）
         investmentMonthly: 30000, // 毎月の積立額 (円)
@@ -26,7 +26,6 @@ let appData = {
         licenseReturnAge: 75, // 免許返納年齢（車両費停止）
         univHousingType: 'home', // 大学時の居住: 'home' (自宅), 'away' (自宅外)
         univAllowance: 100000,   // 自宅外時の仕送り (月額)
-        salaryIncreaseAmount: 0, // 毎年の定期昇給額 (月額・円)
     },
 };
 
@@ -371,6 +370,8 @@ const runSimulation = (customSettings = null, customFamilies = null, customLoans
         labels: [latestMonth],
         data: [currentTotal],     // 総資産 (現金 + 投資)
         investmentData: [0],      // 投資資産の内訳
+        incomeData: [0],          // 収入履歴 (ツールチップ用)
+        expenseData: [0],         // 支出履歴 (ツールチップ用)
     };
 
     // シミュレーション用家族年齢管理 (初期化)
@@ -478,166 +479,167 @@ const runSimulation = (customSettings = null, customFamilies = null, customLoans
 
         let monthlyFlow = monthlyIncomeTotal;
 
-        // B. 支出の減算 (基本生活費 + インフレ)
-        // 増える生活費 = ベース生活費 * (1+r)^t
-        let currentMonthExpense = baseLivingCost * inflationFactor;
+        // B. 支出の減算
+        let currentMonthExpenseTotal = 0; // その月の総支出 (投資除く)
 
-        // C. ライフプラン補正
-        // 1月の時点で年齢を加算 (簡易)
+        // B-1. 生活費 (基本 + インフレ)
+        let costOfLiving = baseLivingCost * inflationFactor;
+
+        // C. ライフプラン補正 & 子供費
         if (currentMonthNum === 1 && i > 0) {
             simFamilies.forEach(f => f.age++);
         }
 
-        // C-1. 教育費 & 子供補正
-        let activeChildren = 0;
+        let eduTotal = 0;
+        let growthTotal = 0;
+        let allowanceTotal = 0;
+
         simFamilies.forEach(f => {
-            // 本人以外の家族を「子供」とみなす簡易判定 (本来は続柄が必要だが、年齢で判定)
-            // 25歳以下を子供とみなして計算
             if (f.age <= s.childIndependenceAge) {
                 // 教育費
                 const eduCost = getEducationCost(f.age, s.educationMode);
-                monthlyFlow -= eduCost;
-                totalEduCost += eduCost; // 集計
+                eduTotal += eduCost;
 
-                // ★追加: 成長に伴う生活費増分
-                const growCost = getGrowthExpense(f.age);
-                // インフレ考慮
-                const inflatedGrowCost = growCost * inflationFactor;
-                monthlyFlow -= inflatedGrowCost;
-                // これは生活費の一部として計上
-                totalLivingCost += inflatedGrowCost;
+                // 成長コスト
+                const growCost = getGrowthExpense(f.age) * inflationFactor;
+                growthTotal += growCost;
 
-                // ★追加: 大学自宅外通学の仕送り (18-21歳)
+                // 仕送り
                 if (f.age >= 18 && f.age <= 21 && s.univHousingType === 'away') {
-                    // 仕送り (インフレ考慮)
-                    const allowance = (s.univAllowance || 100000) * inflationFactor;
-                    monthlyFlow -= allowance;
-                    totalLivingCost += allowance; // 生活費の一部とする
+                    allowanceTotal += (s.univAllowance || 100000) * inflationFactor;
                 }
-
-                activeChildren++;
             }
         });
 
-
-        // C-2. 自立後の生活費削減
+        // Children Reduction (自立後削減)
+        // Note: Logic allows reduction only if NO active children.
+        let livingExpense = costOfLiving;
+        const activeChildren = simFamilies.filter(f => f.age <= s.childIndependenceAge).length;
         if (fams.length > 1 && activeChildren === 0) {
-            // 削減適用: currentMonthExpense を減らす
-            const reductionAmount = currentMonthExpense * (s.costReductionRate / 100);
-            currentMonthExpense -= reductionAmount;
+            livingExpense -= (livingExpense * (s.costReductionRate / 100));
         }
 
-        monthlyFlow -= currentMonthExpense;
-        totalLivingCost += currentMonthExpense; // 集計
+        currentMonthExpenseTotal += livingExpense + eduTotal + growthTotal + allowanceTotal;
 
-        // D-1. 定期支出 (数年に一度)
+        // Count totals for stats
+        totalLivingCost += (livingExpense + growthTotal + allowanceTotal);
+        totalEduCost += eduTotal;
+
+        // D. Recurring & Loans
+        let recurringTotal = 0;
         recurring.forEach(exp => {
-            // 免許返納チェック
             const mainMember = simFamilies[0];
             if (mainMember && mainMember.age >= s.licenseReturnAge) {
-                // カテゴリ指定 または 名称検索
-                if (exp.category === 'vehicle' || exp.name.includes("車") || exp.name.includes("Car") || exp.name.includes("保険")) {
-                    return; // 支出しない
-                }
+                if (exp.category === 'vehicle' || exp.name.includes("車") || exp.name.includes("Car") || exp.name.includes("保険")) return;
             }
-
             if (currentMonthYM.localeCompare(exp.startYM) >= 0) {
                 const diffM = diffMonths(currentMonthYM, exp.startYM);
                 const intervalMonths = exp.intervalYears * 12;
                 if (intervalMonths > 0 && diffM % intervalMonths === 0) {
-                    monthlyFlow -= exp.amount;
-                    totalRecurringCost += exp.amount; // 集計
+                    recurringTotal += exp.amount;
                 }
             }
         });
+        totalRecurringCost += recurringTotal;
+        currentMonthExpenseTotal += recurringTotal;
 
-        // D-2. ローン (毎月)
+        let loanTotal = 0;
         if (loans) {
             loans.forEach(loan => {
                 if (currentMonthYM >= loan.startYM && currentMonthYM <= loan.endYM) {
-                    monthlyFlow -= loan.monthlyAmount;
-                    totalLoanCost += loan.monthlyAmount; // 集計
+                    loanTotal += loan.monthlyAmount;
                 }
             });
         }
+        totalLoanCost += loanTotal;
+        currentMonthExpenseTotal += loanTotal;
 
-        // E. 将来イベント
+        let eventTotal = 0;
         appData.futureEvents.forEach(evt => {
             const fam = simFamilies.find(f => f.id === evt.familyId);
             if (!fam) return;
-            const targetAge = evt.targetAge;
-            const isTargetMonth = evt.targetMonth === currentMonthNum;
-
-            if (fam.age === targetAge && isTargetMonth) {
-                monthlyFlow -= evt.amount;
+            if (fam.age === evt.targetAge && evt.targetMonth === currentMonthNum) {
+                eventTotal += evt.amount;
             }
         });
+        currentMonthExpenseTotal += eventTotal;
 
-        // F. 資産運用
-        // 毎月の積立額を Cash から Investment に移動
-        let investAmount = s.investmentMonthly || 0;
+        // Calculate Surplus/Deficit BEFORE investment
+        // cashFlowBeforeInvest: 投資前の手元資金増減
+        const cashFlowBeforeInvest = monthlyIncomeTotal - currentMonthExpenseTotal;
 
-        // 破綻防止: 現金がマイナスでも積立は止める？ いったん続ける設定
-        monthlyFlow -= investAmount;
-        totalInvestCost += investAmount; // 集計(支出として扱うか資産移動として扱うかだが、キャッシュフロー的には支出)
-
-        // 運用の利回り計算 (月利)
-        // 年利 r% -> 月利 R = r / 12 / 100
+        // F. 資産運用 & 資金繰りロジック (Realistic Logic)
+        // ----------------------------------------------------------------
+        // 1. 運用益の計算 (月初残高に対して)
         const monthlyRate = (s.investmentYield || 0) / 100 / 12;
+        const profit = currentInvestment * monthlyRate;
+        const investmentAfterProfit = currentInvestment + profit;
 
-        // 投資残高の増加 (先月までの残高 * 利回り + 今月の積立)
-        // 資産残高の更新
-        // ... (省略せず既存ロジック維持)
-        if (i === 0) {
-            // 初月
-            currentInvestment += investAmount;
+        // 2. 積立判断
+        // 赤字なら積立しない (借金してまで投資しない)
+        let actualInvest = 0;
+        const targetInvest = s.investmentMonthly || 0;
+
+        if (cashFlowBeforeInvest >= 0) {
+            // 黒字なら設定額を積立 (ただし黒字額に関わらず設定額満額いく仕様。不足分はCashから)
+            // もし「黒字の範囲内でしか投資しない」なら Math.min(cashFlowBeforeInvest, targetInvest)
+            // ここでは「赤字でなければ、貯蓄を取り崩してでも積立は継続する」という標準的な挙動とする
+            actualInvest = targetInvest;
         } else {
-            // 運用益
-            currentInvestment = currentInvestment * (1 + s.investmentYield / 100 / 12) + investAmount;
+            // 赤字なら積立停止
+            actualInvest = 0;
         }
 
-        // G. 総残高更新
-        // 総資産 = 現金残高(Income-Expense-Investで増減) + 投資残高(Invest+Profitで増減)
-        // Asset(t) = Asset(t-1) + (Income - Expense - Invest) + (Invest + Profit)
-        //          = Asset(t-1) + Income - Expense + Profit
-        // currentTotal は「総資産」として扱われていた。
-        // monthlyFlow は (Income - Expenses - Invest) なので
-        // currentTotal += monthlyFlow + investAmount; // 投資分は総資産から減らさない
-        // さらに運用益を加算
-        // if(i > 0) currentTotal += investmentGain; // investmentGain は currentInvestment の計算に含まれる
+        totalInvestCost += actualInvest;
 
-        // currentTotal (総資産) の更新
-        // monthlyFlow は (収入 - 支出 - 積立投資額)
-        // currentTotal は総資産なので、積立投資額は現金から投資へ移動するだけで総資産は減らない。
-        // よって、monthlyFlow に積立投資額を戻して、運用益を加える。
-        // currentTotal += monthlyFlow + investAmount; // 重複加算のバグ修正
-        // 投資の運用益は currentInvestment に既に反映されているので、それを currentTotal にも反映
-        // ただし、currentInvestment は `currentInvestment = currentInvestment * (1 + monthlyRate) + investAmount;`
-        // と計算されているため、この `investAmount` は既に `monthlyFlow` から引かれているもの。
-        // したがって、`currentTotal` には `monthlyFlow` と `currentInvestment` の差分を足す。
-        // `currentTotal` は `latestBalance.total` から始まる「総資産」
-        // `currentInvestment` は「投資資産」
-        // `currentTotal` = `現金` + `投資`
-        // `現金` の変化 = `monthlyFlow` (収入 - 支出 - 積立)
-        // `投資` の変化 = `積立` + `運用益`
-        // `総資産` の変化 = `現金` の変化 + `投資` の変化
-        //                = `monthlyFlow` + (`積立` + `運用益`)
-        //                = (`収入 - 支出 - 積立`) + `積立` + `運用益`
-        //                = `収入 - 支出 + 運用益`
+        // 3. 現金収支と取り崩し
+        // Net Cash Flow for this month (excluding investment profit which stays in asset)
+        const netCashFlow = cashFlowBeforeInvest - actualInvest;
 
-        // 運用益を計算
-        const investmentProfit = (currentInvestment - investAmount) * monthlyRate;
-        currentTotal += monthlyFlow + investAmount + investmentProfit;
+        // 総資産の変化 (P/L) = 収入 - 支出 + 運用益
+        // ※積立(actualInvest)は資産の移動なので総資産PLには影響しない
+        currentTotal += (monthlyIncomeTotal - currentMonthExpenseTotal + profit);
 
+        // 現預金残高 (推計) = 総資産 - 投資資産
+        // この時点で投資資産は `investmentAfterProfit + actualInvest` になりたいが、
+        // もし現金が足りなければ取り崩す必要がある。
+
+        // 仮の投資資産残高
+        let tempInvestment = investmentAfterProfit + actualInvest;
+
+        // 仮の現金残高
+        let tempCash = currentTotal - tempInvestment;
+
+        // 4. 自動取り崩し (Liquidation)
+        // 現金がマイナス(赤字)の場合、投資資産を取り崩して補填する
+        if (tempCash < 0 && tempInvestment > 0) {
+            const shortage = -tempCash; // 不足額
+            // 取り崩せる額は、不足額 か 投資資産の全額 の小さい方
+            const liquidationAmount = Math.min(shortage, tempInvestment);
+
+            // 資産移動
+            tempInvestment -= liquidationAmount;
+            tempCash += liquidationAmount; // これでtempCashは0に近づく (資産があれば0になる)
+        }
+
+        // 確定
+        currentInvestment = Math.max(0, tempInvestment);
+        // currentTotal は変わらない (資産の交換だから)。
+        // ただし手数料等は考慮しない。
+
+        // ----------------------------------------------------------------
 
         // 結果格納
         result.data.push(currentTotal);
         result.investmentData.push(currentInvestment);
+        result.incomeData.push(monthlyIncomeTotal);
+        result.expenseData.push(currentMonthExpenseTotal);
         result.labels.push(currentMonthYM);
 
         if (currentTotal < 0 && crashMonth === null) {
             crashMonth = currentMonthYM;
         }
+
 
         currentMonthDate = addMonth(currentMonthDate);
     }
@@ -965,6 +967,18 @@ const drawChart = (data, historyData, startBalance, startMonth, crashMonth) => {
     const historyPoints = [];
     const simTotalPoints = [];
     const simInvestPoints = [];
+    const incomePoints = [];
+    const expensePoints = [];
+
+    // 収入・支出データマップ (シミュレーションのみ)
+    const incomeMap = new Map();
+    const expenseMap = new Map();
+    if (data.incomeData) {
+        data.labels.forEach((label, idx) => {
+            incomeMap.set(label, data.incomeData[idx]);
+            expenseMap.set(label, data.expenseData[idx]);
+        });
+    }
 
     // 破産リスク表示用のインデックス特定用
     let crashIndex = -1;
@@ -990,6 +1004,14 @@ const drawChart = (data, historyData, startBalance, startMonth, crashMonth) => {
             simInvestPoints.push(simInvestMap.get(label));
         } else {
             simInvestPoints.push(null);
+        }
+
+        if (incomeMap.has(label)) {
+            incomePoints.push(incomeMap.get(label));
+            expensePoints.push(expenseMap.get(label));
+        } else {
+            incomePoints.push(null);
+            expensePoints.push(null);
         }
 
         if (label === crashMonth) {
@@ -1107,6 +1129,22 @@ const drawChart = (data, historyData, startBalance, startMonth, crashMonth) => {
                         label: function (context) {
                             if (context.raw === null || context.raw === undefined || isNaN(context.raw)) return null;
                             return context.dataset.label + ': ' + formatCurrency(context.parsed.y);
+                        },
+                        afterBody: function (tooltipItems) {
+                            if (!tooltipItems || tooltipItems.length === 0) return;
+                            const index = tooltipItems[0].dataIndex;
+                            const lines = [];
+
+                            // 収入・支出 (シミュレーション期間のみ存在)
+                            const inc = incomePoints[index];
+                            const exp = expensePoints[index];
+
+                            if (inc !== null && inc !== undefined) {
+                                lines.push(''); // spacer
+                                lines.push(`収入計: ${formatCurrency(inc)}`);
+                                lines.push(`支出計: ${formatCurrency(exp)}`);
+                            }
+                            return lines;
                         }
                     },
                     bodyFont: { family: 'Inter', size: 14 },
