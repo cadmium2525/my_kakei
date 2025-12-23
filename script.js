@@ -454,7 +454,8 @@ const runSimulation = (customSettings = null, customFamilies = null, customLoans
                 monthlyIncomeTotal += (inc.pension * inflationFactor);
             } else {
                 // 現役 (定額昇給ロジック: 月給に (昇給額 * 年数) を加算)
-                const yearlyIncrease = (s.salaryIncreaseAmount || 0) * yearsPassed;
+                // 現役 (定額昇給ロジック: 月給に (昇給額 * 年数) を加算)
+                const yearlyIncrease = (inc.salaryIncrease || 0) * yearsPassed;
                 const adjustedMonthly = inc.monthly + yearlyIncrease;
 
                 monthlyIncomeTotal += adjustedMonthly;
@@ -609,7 +610,7 @@ const runSimulation = (customSettings = null, customFamilies = null, customLoans
         // monthlyFlow は (収入 - 支出 - 積立投資額)
         // currentTotal は総資産なので、積立投資額は現金から投資へ移動するだけで総資産は減らない。
         // よって、monthlyFlow に積立投資額を戻して、運用益を加える。
-        currentTotal += monthlyFlow + investAmount; // 現金変動分 + 積立投資額
+        // currentTotal += monthlyFlow + investAmount; // 重複加算のバグ修正
         // 投資の運用益は currentInvestment に既に反映されているので、それを currentTotal にも反映
         // ただし、currentInvestment は `currentInvestment = currentInvestment * (1 + monthlyRate) + investAmount;`
         // と計算されているため、この `investAmount` は既に `monthlyFlow` から引かれているもの。
@@ -1516,6 +1517,10 @@ const renderSimConfigTab = () => {
                                        <label class="block text-xs text-gray-400">年間ボーナス (円)</label>
                                        <input type="number" class="w-full p-2 rounded bg-gray-800 border border-gray-600 mt-1 f-bonus" value="${inc.bonus || 0}" step="10000">
                                    </div>
+                                   <div>
+                                       <label class="block text-xs text-gray-400">定期昇給 (月額/年)</label>
+                                       <input type="number" class="w-full p-2 rounded bg-gray-800 border border-gray-600 mt-1 f-salary-increase" value="${inc.salaryIncrease || 0}" step="1000">
+                                   </div>
 
                                    <!-- 退職設定 -->
                                    <div class="md:col-span-2 lg:col-span-1 border-t border-gray-600 pt-2 lg:border-t-0 lg:pt-0">
@@ -1555,6 +1560,7 @@ const renderSimConfigTab = () => {
                            <label class="block text-sm font-medium text-gray-300">想定インフレ率 (年%)</label>
                            <input type="number" id="conf-inflation" value="${s.inflationRate}" step="0.1" class="w-full p-2 rounded-lg mt-1">
                        </div>
+
                    </div>
                </div>
 
@@ -1643,6 +1649,7 @@ const renderSimConfigTab = () => {
                <button type="submit" class="w-full py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-bold transition duration-150">設定を保存して再計算</button>
            </form>
        </div>
+        <div class="h-24"></div>
 `;
     return html;
 };
@@ -1963,7 +1970,8 @@ const handleSimConfigUpdate = (e) => {
     // 古いIncome/Bonus入力は廃止。
     const living = parseInt(document.getElementById('conf-living').value) || 250000;
     const inflation = parseFloat(document.getElementById('conf-inflation').value) || 0;
-    const salaryIncAmount = parseInt(document.getElementById('conf-salary-increase-amount').value) || 0;
+    // const salaryIncElem = document.getElementById('conf-salary-increase-amount'); // 廃止
+    // const salaryIncAmount = salaryIncElem ? (parseInt(salaryIncElem.value) || 0) : 0; // 廃止
     const investMonthly = parseInt(document.getElementById('conf-invest-monthly').value) || 0;
     const investYield = parseFloat(document.getElementById('conf-invest-yield').value) || 0;
     const eduMode = document.getElementById('conf-edu-mode').value;
@@ -1981,6 +1989,7 @@ const handleSimConfigUpdate = (e) => {
         familyIncomes[id] = {
             monthly: parseInt(div.querySelector('.f-income').value) || 0,
             bonus: parseInt(div.querySelector('.f-bonus').value) || 0,
+            salaryIncrease: parseInt(div.querySelector('.f-salary-increase').value) || 0,
             retirementAge: parseInt(div.querySelector('.f-retire-age').value) || 60,
             severance: parseInt(div.querySelector('.f-severance').value) || 0,
             pension: parseInt(div.querySelector('.f-pension').value) || 0,
@@ -1995,7 +2004,7 @@ const handleSimConfigUpdate = (e) => {
             familyIncomes: familyIncomes, // 保存
             currentLivingCost: living,
             inflationRate: inflation,
-            salaryIncreaseAmount: salaryIncAmount,
+
             investmentMonthly: investMonthly,
             investmentYield: investYield,
             educationMode: eduMode,
